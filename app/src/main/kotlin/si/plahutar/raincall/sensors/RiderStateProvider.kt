@@ -7,6 +7,7 @@ import io.hammerhead.karooext.models.OnLocationChanged
 import io.hammerhead.karooext.models.RideState
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.collect
