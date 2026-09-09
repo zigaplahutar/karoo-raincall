@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ExtensionInfo
+    displayName="@string/app_name"
+    icon="@drawable/ic_raincall"
+    id="raincall">
+    <!--
+      One data type for every field size. Karoo passes the real dimensions of whichever
+      slot the rider chose, and the view sizes itself to them. Declaring separate small,
+      medium and large types would clutter the field picker with three entries for one
+      piece of information, and still would not adapt to a resized slot.
+
+      graphical="true" because the field draws its own text layout rather than handing
+      Karoo a single number to format.
+    -->
+    <DataType
+        description="@string/rain_call_description"
+        displayName="@string/rain_call_field"
+        graphical="true"
+        icon="@drawable/ic_raincall"
+        typeId="rain-call" />
+</ExtensionInfo>

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <application
+        android:allowBackup="true"
+        android:icon="@drawable/ic_raincall"
+        android:label="@string/app_name"
+        android:supportsRtl="false">
+
+        <service
+            android:name=".extension.RainCallExtension"
+            android:exported="true"
+            tools:ignore="ExportedService">
+            <!-- How the Karoo system discovers this extension. -->
+            <intent-filter>
+                <action android:name="io.hammerhead.karooext.KAROO_EXTENSION" />
+            </intent-filter>
+            <!-- Declares the data types and resources the extension provides. -->
+            <meta-data
+                android:name="io.hammerhead.karooext.EXTENSION_INFO"
+                android:resource="@xml/extension_info" />
+        </service>
+
+        <!-- Lets Karoo offer in-place updates from GitHub Releases, the same
+             distribution route as the ARSO Radar extension. -->
+        <meta-data
+            android:name="io.hammerhead.karooext.MANIFEST_URL"
+            android:value="https://github.com/zigaplahutar/karoo-raincall/releases/latest/download/manifest.json" />
+
+    </application>
+</manifest>

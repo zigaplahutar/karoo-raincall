@@ -1,0 +1,38 @@
+[versions]
+agp = "8.5.2"
+kotlin = "2.0.20"
+karooExt = "1.1.9"
+coroutines = "1.8.1"
+serialization = "1.7.1"
+junit = "4.13.2"
+robolectric = "4.13"
+androidxCore = "1.13.1"
+glance = "1.1.1"
+composeBom = "2024.09.00"
+
+[libraries]
+karoo-ext = { module = "io.hammerhead:karoo-ext", version.ref = "karooExt" }
+
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
+
+androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidxCore" }
+
+# Glance builds the RemoteViews the Karoo data field is drawn from.
+androidx-glance-appwidget = { module = "androidx.glance:glance-appwidget", version.ref = "glance" }
+androidx-glance-preview = { module = "androidx.glance:glance-preview", version.ref = "glance" }
+androidx-glance-appwidget-preview = { module = "androidx.glance:glance-appwidget-preview", version.ref = "glance" }
+androidx-compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
+
+junit = { module = "junit:junit", version.ref = "junit" }
+# Robolectric lets the tile decoder be tested against a real Bitmap on the JVM, so the
+# pixel-reading path is covered in CI rather than only on the device.
+robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectric" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

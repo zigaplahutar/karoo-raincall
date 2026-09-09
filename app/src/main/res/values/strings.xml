@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">RainCall</string>
+
+    <string name="rain_call_field">Rain</string>
+    <string name="rain_call_description">When rain will reach you, how hard, and for how long</string>
+
+    <!-- Mandatory under RainViewer's free terms of use. Shown in settings and must
+         stay visible in the app; it is not decoration we can drop for space. -->
+    <string name="rainviewer_attribution">Weather data by RainViewer</string>
+    <string name="rainviewer_url">https://www.rainviewer.com/</string>
+</resources>

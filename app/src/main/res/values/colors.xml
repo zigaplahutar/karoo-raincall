@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Only hail gets red. If heavy rain were red too there would be nothing left to
+         escalate to, and a rider who sees red for ordinary heavy rain learns to
+         discount it - exactly the wrong lesson for the one genuinely hazardous case. -->
+    <color name="alert_hail">#D32F2F</color>
+    <color name="alert_heavy">#F57C00</color>
+    <color name="alert_default">#FFFFFF</color>
+    <color name="alert_clear">#E8F5E9</color>
+
+    <color name="alert_text_on_dark">#FFFFFF</color>
+    <color name="alert_text_on_light">#212121</color>
+</resources>
