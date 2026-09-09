@@ -68,7 +68,7 @@ class RiderStateProvider(
      * Null rather than a placeholder: consumers must show "waiting for GPS" rather than
      * a state built from zeroes that looks like a rider stationary at the equator.
      */
-    val state: Flow<RiderState?> = _state.asStateFlow()
+    val state: StateFlow<RiderState?> = _state.asStateFlow()
 
     private var latestSpeedAtMillis: Long = 0
     private var latestAccuracyMetres: Double? = null
