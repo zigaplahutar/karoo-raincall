@@ -41,11 +41,14 @@ object HomeEvaluator {
     /**
      * How far ahead home options are simulated.
      *
-     * Longer than the plain evasion horizon because getting home takes time — a 20 km
-     * ride back is 42 minutes at a steady pace — but not so long that it depends on
-     * radar predicting further than it can.
+     * Getting home takes time, so this is longer than the plain evasion horizon — but it
+     * is bounded by what one radar frame can actually support, not by how long a ride
+     * home might take. A nowcast is credible for about half an hour; past that the
+     * advection has carried the lookup tens of kilometres and the answer is extrapolation
+     * wearing the clothes of a measurement. Forty-five minutes still covers a ride home
+     * of roughly 30 km, and anything further honestly reports [HomeAdvice.OutOfRange].
      */
-    const val HORIZON_MINUTES = 90.0
+    const val HORIZON_MINUTES = 45.0
 
     /** Outbound durations tried before turning for home, in minutes. */
     val TURNAROUND_OPTIONS_MINUTES = doubleArrayOf(0.0, 5.0, 10.0, 15.0, 20.0, 30.0)
@@ -144,18 +147,32 @@ object HomeEvaluator {
         var bestWet = Double.MAX_VALUE
         var bestArrival: Double? = null
 
+        // The deadline may only be extended while every shorter option was dry as well.
+        // `TURNAROUND_OPTIONS_MINUTES` is in increasing order, so the first wet option
+        // fixes it. Taking the largest dry option regardless would let "dry now, wet at
+        // 5, 10 and 15, dry again at 30" be reported as a comfortable half hour, when
+        // leaving at any point in between would soak the rider.
+        var deadlineStillOpen = true
+
+        // Whether any turnaround we could actually simulate came back wet. A deadline
+        // only means something if carrying on longer is genuinely worse; without this,
+        // an option dropped merely for not *arriving* inside the horizon reads as if it
+        // were wet, and a rider under a cloudless sky is handed a countdown.
+        var anyWetOption = false
+
         for (outbound in TURNAROUND_OPTIONS_MINUTES) {
             val result = simulate(
                 rider, home, field, speed, heading, outbound,
                 cellSpeed, cellBearing, frameAge,
             )
+            // Too far to get home inside the horizon: says nothing either way.
             if (result.arrivalMinutes == null) continue
 
-            if (result.wetMinutes <= 0.0) {
-                // Keep the largest, not the first: the rider wants to know how long they
-                // can carry on, not merely that turning now would work.
-                latestDry = maxOf(latestDry ?: 0.0, outbound)
-            }
+            // A turnaround whose ride home left radar coverage cannot be called dry:
+            // the dry part is only the part we watched.
+            val dry = result.fullyObserved && result.wetMinutes <= 0.0
+            if (!dry) anyWetOption = true
+            if (deadlineStillOpen && dry) latestDry = outbound else deadlineStillOpen = false
             if (result.wetMinutes < bestWet) {
                 bestWet = result.wetMinutes
                 bestArrival = result.arrivalMinutes
@@ -163,10 +180,10 @@ object HomeEvaluator {
         }
 
         return when {
-            // Dry even after the longest outbound leg we tried: there is nothing to
-            // warn about, and inventing a deadline would be false precision.
-            latestDry != null && latestDry >= TURNAROUND_OPTIONS_MINUTES.last() ->
-                HomeAdvice.Comfortable(distance)
+            // Nothing we could simulate was wet: there is nothing to warn about, and
+            // inventing a deadline out of where the horizon happened to fall would be
+            // a false alarm rather than false precision.
+            latestDry != null && !anyWetOption -> HomeAdvice.Comfortable(distance)
 
             latestDry != null -> HomeAdvice.TurnAroundWithin(latestDry, distance)
 
@@ -177,7 +194,17 @@ object HomeEvaluator {
         }
     }
 
-    private data class Result(val wetMinutes: Double, val arrivalMinutes: Double?)
+    private data class Result(
+        val wetMinutes: Double,
+        val arrivalMinutes: Double?,
+        /**
+         * Whether the whole simulated ride stayed inside the downloaded radar window.
+         *
+         * False means part of the route home was never observed, so a wet total of zero
+         * says only "nothing was seen", not "you will stay dry".
+         */
+        val fullyObserved: Boolean,
+    )
 
     /**
      * Ride the current heading for [outboundMinutes], then head for home.
@@ -202,6 +229,7 @@ object HomeEvaluator {
         var wet = 0.0
         var minutes = 0.0
         var arrival: Double? = null
+        var fullyObserved = true
 
         while (minutes <= HORIZON_MINUTES) {
             if (minutes <= outboundMinutes) {
@@ -237,12 +265,16 @@ object HomeEvaluator {
                 longitude to latitude
             }
 
-            if (field.sampleAt(lookup.first, lookup.second).isMeaningful) {
-                wet += STEP_MINUTES
+            when (field.observe(lookup.first, lookup.second)) {
+                RadarField.Observation.WET -> wet += STEP_MINUTES
+                RadarField.Observation.DRY -> Unit
+                // Out of coverage. Keep walking so arrival is still reported, but the
+                // dry total can no longer be stood behind.
+                RadarField.Observation.UNOBSERVED -> fullyObserved = false
             }
             minutes += STEP_MINUTES
         }
 
-        return Result(wet, arrival)
+        return Result(wet, arrival, fullyObserved)
     }
 }

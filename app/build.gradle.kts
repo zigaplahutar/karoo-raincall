@@ -45,6 +45,10 @@ android {
     testOptions {
         unitTests {
             isIncludeAndroidResources = true
+            // The pipeline logs through android.util.Log, which is a stub that throws in
+            // a plain JVM test. Returning defaults instead lets the decision logic be
+            // tested without dragging in Robolectric for the sake of a log line.
+            isReturnDefaultValues = true
             all { it.testLogging { events("passed", "skipped", "failed") } }
         }
     }

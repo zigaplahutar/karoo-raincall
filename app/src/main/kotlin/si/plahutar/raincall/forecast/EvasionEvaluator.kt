@@ -76,6 +76,51 @@ object EvasionEvaluator {
     /** What kind of manoeuvre an option represents. */
     enum class Kind { CONTINUE, REVERSE, WAIT, DETOUR }
 
+    /**
+     * How far into an option the radar window actually reached before the path left it.
+     *
+     * An option that rides off the edge of the downloaded mosaic cannot be credited with
+     * dry minutes out there, so options are compared only over the span every one of
+     * them can speak to, and an option too short to vouch for is not recommended at all.
+     */
+    const val MIN_KNOWN_MINUTES = 15.0
+
+    /**
+     * The result of simulating one plan: how wet it was, and how far it could be seen.
+     *
+     * [wetByStep] holds cumulative wet minutes after each half-minute step, which is what
+     * lets two options be compared over a shared span even when one of them ran out of
+     * radar coverage sooner than the other.
+     */
+    data class Simulation(
+        private val wetByStep: DoubleArray,
+        /**
+         * How far ahead this plan stayed inside radar coverage.
+         *
+         * Less than [HORIZON_MINUTES] means the path left the downloaded window;
+         * everything past this point is unknown rather than dry.
+         */
+        val knownMinutes: Double,
+    ) {
+        /** Total wet minutes over the whole span that could be observed. */
+        val wetMinutes: Double get() = wetByStep.last()
+
+        /** Wet minutes counted only up to [minutes], for like-for-like ranking. */
+        fun wetWithin(minutes: Double): Double {
+            if (wetByStep.isEmpty()) return 0.0
+            val index = (minutes / STEP_MINUTES).toInt().coerceIn(0, wetByStep.size - 1)
+            return wetByStep[index]
+        }
+
+        // Hand-written because the array field makes the generated ones wrong.
+        override fun equals(other: Any?): Boolean =
+            other is Simulation &&
+                knownMinutes == other.knownMinutes &&
+                wetByStep.contentEquals(other.wetByStep)
+
+        override fun hashCode(): Int = 31 * wetByStep.contentHashCode() + knownMinutes.hashCode()
+    }
+
     /** One evaluated option. */
     data class Option(
         val kind: Kind,
@@ -83,9 +128,17 @@ object EvasionEvaluator {
         val bearingDegrees: Double?,
         /** Minutes spent stationary before setting off, 0 for everything but a wait. */
         val waitMinutes: Double,
-        /** Minutes of the next hour spent in precipitation. */
-        val wetMinutes: Double,
+        val simulation: Simulation,
     ) {
+        /** Minutes of the next hour spent in precipitation, as far as could be seen. */
+        val wetMinutes: Double get() = simulation.wetMinutes
+
+        /** How far ahead this option stayed inside radar coverage. */
+        val knownMinutes: Double get() = simulation.knownMinutes
+
+        /** Whether the coverage reaches far enough to recommend this at all. */
+        val isVouchable: Boolean get() = knownMinutes >= MIN_KNOWN_MINUTES
+
         /** Compass label for the direction, or null. */
         val compass: String? get() = bearingDegrees?.let { TileMath.compassPoint(it) }
     }
@@ -161,24 +214,44 @@ object EvasionEvaluator {
             }
         }
 
+        // Only options the radar can actually vouch for are eligible to be recommended.
+        // One that leaves the downloaded window after four minutes may well be drier out
+        // there, but we have not looked, and saying "turn back" on that basis is
+        // invention rather than advice.
+        val vouchable = options.filter { it.isVouchable }
+        if (vouchable.none { it.kind != Kind.CONTINUE }) {
+            return Advice.ContinueIsBest(continueOption.wetMinutes)
+        }
+
+        // Compare over the span every candidate reached, so an option is never rewarded
+        // for having run out of coverage early.
+        val commonHorizon = vouchable.minOf { it.knownMinutes }
+        val continueWet = continueOption.simulation.wetWithin(commonHorizon)
+
         // Drop waits that do not repay the time they cost before ranking, rather than
         // after: otherwise a wait can win the comparison and then be discarded, leaving
         // the rider with the second-best answer presented as the best.
-        val viable = options.filter { option ->
+        val viable = vouchable.filter { option ->
             option.kind != Kind.WAIT ||
-                (continueOption.wetMinutes - option.wetMinutes) >=
+                (continueWet - option.simulation.wetWithin(commonHorizon)) >=
                 option.waitMinutes * WAIT_PAYBACK_RATIO
         }
 
         val best = viable.minWithOrNull(
-            compareBy<Option> { it.wetMinutes }.thenBy { disruption(it, heading) }
-        ) ?: return Advice.Unknown
+            compareBy<Option> { it.simulation.wetWithin(commonHorizon) }
+                .thenBy { disruption(it, heading) }
+        ) ?: return Advice.ContinueIsBest(continueOption.wetMinutes)
 
-        if (best.wetMinutes >= NO_GOOD_OPTION_MINUTES) {
-            return Advice.NoGoodOption(best.wetMinutes)
+        val bestWet = best.simulation.wetWithin(commonHorizon)
+        val saving = continueWet - bestWet
+
+        // Judge "nothing works" on the saving rather than an absolute soak time. Forty
+        // wet minutes reduced to twenty-six is worth saying even though twenty-six is a
+        // drenching; what is not worth saying is thirty-five reduced to thirty.
+        if (saving < MIN_SAVING_MINUTES && continueWet >= NO_GOOD_OPTION_MINUTES) {
+            return Advice.NoGoodOption(continueOption.wetMinutes)
         }
 
-        val saving = continueOption.wetMinutes - best.wetMinutes
         if (best.kind == Kind.CONTINUE || saving < MIN_SAVING_MINUTES) {
             return Advice.ContinueIsBest(continueOption.wetMinutes)
         }
@@ -239,6 +312,11 @@ object EvasionEvaluator {
      * Uses the same backward advection as the ETA search: the sample point is stepped
      * against the cell velocity by the frame's age plus the elapsed time, rather than
      * the field being moved forward.
+     *
+     * Stepping stops the moment the lookup leaves radar coverage. Carrying on would
+     * quietly accumulate dry minutes for ground that was never observed, and over a
+     * sixty-minute horizon a rider covers 43 km while the advection displaces the lookup
+     * by tens more — so leaving a 60 km window is routine, not exotic.
      */
     private fun simulate(
         rider: RiderState,
@@ -249,11 +327,15 @@ object EvasionEvaluator {
         cellSpeed: Double,
         cellBearing: Double?,
         frameAgeSeconds: Long,
-    ): Double {
+    ): Simulation {
+        val steps = (HORIZON_MINUTES / STEP_MINUTES).toInt() + 1
+        val wetByStep = DoubleArray(steps)
         var wet = 0.0
         var minutes = 0.0
+        var known = 0.0
+        var index = 0
 
-        while (minutes <= HORIZON_MINUTES) {
+        while (index < steps) {
             val position = if (bearing == null || minutes <= waitMinutes) {
                 rider.longitude to rider.latitude
             } else {
@@ -274,13 +356,25 @@ object EvasionEvaluator {
                 position
             }
 
-            if (field.sampleAt(lookup.first, lookup.second).isMeaningful) {
-                wet += STEP_MINUTES
+            when (field.observe(lookup.first, lookup.second)) {
+                RadarField.Observation.WET -> wet += STEP_MINUTES
+                RadarField.Observation.DRY -> Unit
+                RadarField.Observation.UNOBSERVED -> {
+                    // Out of coverage. Everything from here on is unknown; fill the rest
+                    // of the timeline with the total so far so a shared cut-off past this
+                    // point reads the last figure we could actually stand behind.
+                    java.util.Arrays.fill(wetByStep, index, steps, wet)
+                    return Simulation(wetByStep, known)
+                }
             }
+
+            wetByStep[index] = wet
+            known = minutes
             minutes += STEP_MINUTES
+            index++
         }
 
-        return wet
+        return Simulation(wetByStep, HORIZON_MINUTES)
     }
 
     /**

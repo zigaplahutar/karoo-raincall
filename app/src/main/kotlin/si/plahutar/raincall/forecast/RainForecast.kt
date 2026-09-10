@@ -37,16 +37,44 @@ data class RainForecast(
      * twelve-minute-old frame is a different proposition from one built on fresh data.
      */
     val frameAgeSeconds: Long,
+
+    /**
+     * Whether the radar could be consulted at all, and how recently.
+     *
+     * Carried explicitly rather than inferred. The obvious-looking inference — no
+     * encounter, no nearest cell and no confidence must mean "we cannot see" — is wrong
+     * in both directions: a rider standing still under a genuinely clear sky matches it
+     * exactly and would be told "No radar data", while a rider with a good fix and an
+     * empty field does *not* match it and would be told "Clear" on the strength of
+     * nothing. Confidence describes the *rider*; this describes the *data*.
+     */
+    val availability: Availability = Availability.OK,
 ) {
     /** True when there is nothing to warn about at all. */
     val isClear: Boolean get() = nearest == null && encounter == null
+
+    /** What the radar side of the forecast is worth. */
+    enum class Availability {
+        /** A frame recent enough to reason from. */
+        OK,
+
+        /** No frame at all: nothing fetched, or nothing decodable. */
+        NO_RADAR,
+
+        /**
+         * A frame too old to extrapolate from.
+         *
+         * Distinct from [NO_RADAR] because the rider can be told how stale it is, which
+         * is more useful than a blank refusal.
+         */
+        STALE,
+    }
 
     companion object {
         /**
          * Used when there is no radar data rather than no rain.
          *
-         * "We cannot see" must not render as "you are clear", which is why this carries
-         * [RiderState.Confidence.NONE] rather than an empty but confident result.
+         * "We cannot see" must not render as "you are clear".
          */
         fun unavailable(frameAgeSeconds: Long = 0) = RainForecast(
             nearest = null,
@@ -54,6 +82,17 @@ data class RainForecast(
             confidence = RiderState.Confidence.NONE,
             horizonMinutes = 0.0,
             frameAgeSeconds = frameAgeSeconds,
+            availability = Availability.NO_RADAR,
+        )
+
+        /** The frame in hand is too old to extrapolate from. */
+        fun stale(frameAgeSeconds: Long) = RainForecast(
+            nearest = null,
+            encounter = null,
+            confidence = RiderState.Confidence.NONE,
+            horizonMinutes = 0.0,
+            frameAgeSeconds = frameAgeSeconds,
+            availability = Availability.STALE,
         )
     }
 }

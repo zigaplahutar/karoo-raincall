@@ -149,6 +149,7 @@ class AlertPolicy(
 
         // Nothing to say without data, and nothing worth interrupting for on data this
         // old.
+        if (forecast.availability != RainForecast.Availability.OK) return null
         if (forecast.confidence == RiderState.Confidence.NONE) return null
         if (forecast.frameAgeSeconds > MAX_FRAME_AGE_SECONDS) return null
 

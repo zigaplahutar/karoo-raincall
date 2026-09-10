@@ -2,6 +2,7 @@ package si.plahutar.raincall.forecast
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -126,6 +127,34 @@ class MessageComposerTest {
     fun `an encounter with no end is said to be ongoing, not given a made-up length`() {
         val m = MessageComposer.compose(forecast(duration = null))
         assertEquals("moderate, ongoing", m.details[0].full)
+    }
+
+    @Test
+    fun `a stationary rider under a clear sky is not told the radar is broken`() {
+        // Standing still there is no heading to project along, so confidence is NONE and
+        // nothing is found — which is exactly the shape of a dead radar feed. Inferring
+        // "no data" from that told a rider at a café stop that the app had failed, when
+        // the truth was the pleasanter one: nothing is coming.
+        val m = MessageComposer.compose(
+            forecast(
+                eta = null,
+                nearestMetres = null,
+                confidence = RiderState.Confidence.NONE,
+                horizon = 0.0,
+            )
+        )
+
+        assertNotEquals("No radar data", m.headline)
+        assertEquals(Severity.CLEAR, m.severity)
+    }
+
+    @Test
+    fun `a stale frame is reported as stale, with its age, not as clear`() {
+        val m = MessageComposer.compose(RainForecast.stale(frameAgeSeconds = 24 * 60))
+
+        assertEquals(Severity.UNKNOWN, m.severity)
+        assertTrue("headline was \"${m.headline}\"", m.headline.contains("24"))
+        assertFalse(m.headline.contains("Clear", ignoreCase = true))
     }
 
     @Test

@@ -350,9 +350,20 @@ class RainForecasterTest {
         val unavailable = RainForecast.unavailable(frameAgeSeconds = 120)
         assertEquals(RiderState.Confidence.NONE, unavailable.confidence)
         assertEquals(0.0, unavailable.horizonMinutes, 1e-9)
-        // isClear is true structurally, but the confidence is what stops the UI from
-        // rendering "you are clear" when the real answer is "we cannot see".
         assertEquals(120L, unavailable.frameAgeSeconds)
+
+        // This test used to reason that confidence was what stopped the UI rendering
+        // "you are clear" over a dead radar feed. It is not, and cannot be: confidence
+        // describes the *rider* — heading, fix accuracy, how twisty the road has been —
+        // and never how much of the field was observed. A rider with a perfect fix on a
+        // straight road scores HIGH confidence whether the radar returned a picture or
+        // nothing at all. Availability is the flag that actually carries this, and the
+        // message routes on it.
+        assertEquals(RainForecast.Availability.NO_RADAR, unavailable.availability)
+        assertEquals(
+            RainForecast.Availability.OK,
+            RainForecaster.forecast(rider(), bandEastOfRider(50), null, 0).availability,
+        )
     }
 
     @Test
@@ -362,5 +373,9 @@ class RainForecasterTest {
 
         val forecast = RainForecaster.forecast(faraway, f, null, 0)
         assertNull(forecast.nearest)
+        assertNull(
+            "nothing was observed anywhere near this rider, so nothing may be reported",
+            forecast.encounter,
+        )
     }
 }

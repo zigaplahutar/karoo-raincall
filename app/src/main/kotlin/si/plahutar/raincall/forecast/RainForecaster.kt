@@ -4,6 +4,7 @@ import si.plahutar.raincall.model.RiderState
 import si.plahutar.raincall.radar.CellMotionEstimator
 import si.plahutar.raincall.radar.DbzPalette
 import si.plahutar.raincall.radar.RadarField
+import si.plahutar.raincall.radar.RainViewerApi
 import si.plahutar.raincall.radar.TileMath
 import kotlin.math.tan
 
@@ -56,6 +57,15 @@ object RainForecaster {
     const val NEAREST_SEARCH_RADIUS_M = 60_000.0
 
     /**
+     * Beyond this frame age the answer stops being allowed to sound certain.
+     *
+     * Ten minutes is one RainViewer publishing interval; at a typical 12 m/s the cells
+     * have moved 7 km since the picture was taken, which the advection corrects for but
+     * cannot make exact.
+     */
+    const val AGEING_FRAME_SECONDS = 10 * 60L
+
+    /**
      * Once an encounter starts, how much longer to keep stepping to measure it.
      *
      * Bounded so a rider inside a large frontal band does not send the search running
@@ -87,6 +97,14 @@ object RainForecaster {
             return RainForecast.unavailable()
         }
 
+        // Past this the observed positions have been carried forward so far that the
+        // result is extrapolation, not measurement — and because everything is advected
+        // by `age + lead`, a stalled feed eventually pushes every lookup clean out of the
+        // window and the app would cheerfully report a clear sky.
+        if (frameAge > RainViewerApi.MAX_USABLE_FRAME_AGE_SECONDS) {
+            return RainForecast.stale(frameAge)
+        }
+
         val metresPerPixel = field.metresPerPixel(rider.latitude)
 
         val velocity = cellVelocity?.takeIf { it.isUsable }
@@ -104,10 +122,25 @@ object RainForecaster {
         return RainForecast(
             nearest = nearest,
             encounter = encounter,
-            confidence = rider.confidence,
+            // An ageing frame caps how confident the answer may sound, however good the
+            // rider's fix and however straight the road: by ten minutes the cells have
+            // moved kilometres from where they were seen.
+            confidence = minOf(rider.confidence, confidenceCeilingFor(frameAge)),
             horizonMinutes = rider.horizonMinutes,
             frameAgeSeconds = frameAge,
+            availability = RainForecast.Availability.OK,
         )
+    }
+
+    /**
+     * How confident a forecast may sound given only the age of the frame it came from.
+     *
+     * Not a judgement about the rider — that is [RiderState.confidence] — but about the
+     * observation, and the final confidence is the lesser of the two.
+     */
+    private fun confidenceCeilingFor(frameAgeSeconds: Long): RiderState.Confidence = when {
+        frameAgeSeconds <= AGEING_FRAME_SECONDS -> RiderState.Confidence.HIGH
+        else -> RiderState.Confidence.MEDIUM
     }
 
     /**
@@ -246,6 +279,7 @@ object RainForecaster {
             val halfWidth = alongMetres * tan(coneHalfAngle)
 
             var wetSamples = 0
+            var observedSamples = 0
             var stepIntensity = DbzPalette.Intensity.NONE
             var stepType = DbzPalette.PrecipType.NONE
             var stepHail = false
@@ -282,6 +316,14 @@ object RainForecaster {
                     samplePoint
                 }
 
+                if (field.observe(lookupPoint.first, lookupPoint.second) ==
+                    RadarField.Observation.UNOBSERVED
+                ) {
+                    // Outside the downloaded window. Not dry — unknown.
+                    continue
+                }
+                observedSamples++
+
                 val sample = field.sampleAt(lookupPoint.first, lookupPoint.second)
                 if (!sample.isMeaningful) continue
 
@@ -293,10 +335,17 @@ object RainForecaster {
                 if (sample.possibleHail) stepHail = true
             }
 
+            // The cone has walked off the edge of the mosaic. Stopping here reports
+            // "nothing found within N minutes", which is true; carrying on would report
+            // "no rain ahead" about ground that was never looked at.
+            if (observedSamples == 0) break
+
             if (wetSamples > 0) {
                 if (firstHitMinutes == null) {
                     firstHitMinutes = minutes
-                    firstHitCoverage = wetSamples.toDouble() / CONE_SAMPLES
+                    // Out of the samples we could actually see, not out of all nine:
+                    // a cone half outside the window is not half dry.
+                    firstHitCoverage = wetSamples.toDouble() / observedSamples
                 }
                 lastWetMinutes = minutes
                 if (stepIntensity.ordinal > worstIntensity.ordinal) {

@@ -124,6 +124,50 @@ class RadarField(
         return sampleAt(mosaic.first, mosaic.second)
     }
 
+    /**
+     * What this field can actually say about a position: wet, dry, or nothing at all.
+     *
+     * [sampleAt] cannot answer this, because it collapses "outside the window we
+     * downloaded" and "inside it, no echo" into the same empty sample. For a single
+     * reading that is harmless, but every simulator in the app steps a point forward
+     * through time and asks repeatedly — and a path that leaves the window would
+     * otherwise score as a run of dry minutes, which is how "turn back, it saves you
+     * 48 minutes" gets said about ground the app never looked at.
+     *
+     * The distinction only extends to the edge of the mosaic. Inside it, RainViewer's
+     * scheme 0 encodes "no rain here" and "no radar coverage here" identically as
+     * transparent, so [DRY] there is the honest limit of what the source supports.
+     */
+    fun observe(longitude: Double, latitude: Double): Observation {
+        val global = TileMath.lonLatToGlobalPixel(
+            longitude, latitude, range.zoom, range.tileSize,
+        )
+        val mosaic = range.toMosaicPixel(global) ?: return Observation.UNOBSERVED
+        return if (sampleAt(mosaic.first, mosaic.second).isMeaningful) {
+            Observation.WET
+        } else {
+            Observation.DRY
+        }
+    }
+
+    /** What the field knows about one position. */
+    enum class Observation {
+        /** Precipitation worth reporting. */
+        WET,
+
+        /** Looked, and there is nothing there. */
+        DRY,
+
+        /**
+         * Outside the downloaded window: no opinion.
+         *
+         * Callers must not fold this into [DRY]. "We did not look" is not "it is clear",
+         * and treating it as such is the difference between honest advice and confident
+         * invention.
+         */
+        UNOBSERVED,
+    }
+
     /** Geographic position of the centre of a pixel. */
     fun positionOf(x: Int, y: Int): Pair<Double, Double> {
         val global = range.toGlobalPixel(x, y)

@@ -12,6 +12,27 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
+ * Where decoded radar frames come from.
+ *
+ * An interface purely so the pipeline that drives it can be tested. Everything
+ * interesting about the polling loop — that a new index is fetched every cycle, that a
+ * ride ending clears the state — is timing and control flow, which cannot be checked at
+ * all while the only implementation insists on real HTTP and real bitmaps.
+ */
+interface RadarSource {
+    suspend fun fetchIndex(): RainViewerApi.Index?
+
+    suspend fun fetchField(
+        index: RainViewerApi.Index,
+        frame: RainViewerApi.Frame,
+        longitude: Double,
+        latitude: Double,
+    ): RadarField?
+
+    fun clear()
+}
+
+/**
  * Fetches RainViewer tiles and turns them into [RadarField]s.
  *
  * This is the only part of RainCall that touches the network or Android graphics.
@@ -28,7 +49,7 @@ class RadarRepository(
     private val tileSize: Int = RainViewerApi.TILE_SIZE,
     /** How far around the rider to fetch. */
     private val radiusMetres: Double = 60_000.0,
-) {
+) : RadarSource {
 
     companion object {
         private const val TAG = "RadarRepository"
@@ -59,7 +80,7 @@ class RadarRepository(
     val usingFallbackScheme: Boolean get() = useFallbackScheme
 
     /** Fetch the frame index. Returns null on any failure. */
-    suspend fun fetchIndex(): RainViewerApi.Index? = withContext(Dispatchers.IO) {
+    override suspend fun fetchIndex(): RainViewerApi.Index? = withContext(Dispatchers.IO) {
         runCatching {
             val body = get(RainViewerApi.INDEX_URL)
             json.decodeFromString<RainViewerApi.Index>(body)
@@ -74,7 +95,7 @@ class RadarRepository(
      * Returns the cached field when the frame has already been decoded, which is the
      * common case for the previous frame in a motion pair.
      */
-    suspend fun fetchField(
+    override suspend fun fetchField(
         index: RainViewerApi.Index,
         frame: RainViewerApi.Frame,
         longitude: Double,
@@ -236,6 +257,15 @@ class RadarRepository(
         }
     }
 
-    /** Drop cached frames. Called when a ride ends. */
-    fun clear() = cache.clear()
+    /**
+     * Drop cached frames and any decoding decisions. Called when a ride ends.
+     *
+     * The fallback flag is cleared too: it latches on a single odd tile, and without
+     * this one anomaly would keep every later ride on the lossy Universal Blue decoder —
+     * no snow, lossy above 64 dBZ — for as long as the service stayed alive.
+     */
+    override fun clear() {
+        cache.clear()
+        useFallbackScheme = false
+    }
 }

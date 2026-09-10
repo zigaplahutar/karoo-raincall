@@ -3,11 +3,13 @@ package si.plahutar.raincall.extension
 import io.hammerhead.karooext.KarooSystemService
 import io.hammerhead.karooext.extension.DataTypeImpl
 import io.hammerhead.karooext.extension.KarooExtension
+import io.hammerhead.karooext.models.RideState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import si.plahutar.raincall.alert.AlertPresenter
 import si.plahutar.raincall.forecast.DisplayUnits
 import si.plahutar.raincall.radar.RadarRepository
@@ -62,7 +64,27 @@ class RainCallExtension : KarooExtension(EXTENSION_ID, VERSION) {
             if (connected) {
                 riderStates.start(scope)
                 pipeline.start(scope)
+                scope.launch { watchRideLifecycle(riderStates) }
             }
+        }
+    }
+
+    /**
+     * Clear per-ride state when a ride ends.
+     *
+     * Keyed on the transition into [RideState.Idle], never on "not recording". A pause —
+     * especially an automatic one at a traffic light — is a few seconds in the middle of
+     * a ride, and treating it as an ending would wipe the ride summary, forget where
+     * home is, and re-arm the "already raining when we started" suppression so the next
+     * warning is swallowed. Without this the state simply never cleared at all: a second
+     * ride inherited the first one's home and its accumulated wet minutes.
+     */
+    private suspend fun watchRideLifecycle(riderStates: RiderStateProvider) {
+        var wasIdle = true
+        riderStates.rideState.collect { state ->
+            val idle = state is RideState.Idle
+            if (idle && !wasIdle) pipeline.reset()
+            wasIdle = idle
         }
     }
 

@@ -188,8 +188,15 @@ object MessageComposer {
         val nearest = forecast.nearest
 
         return when {
-            forecast.confidence == RiderState.Confidence.NONE && forecast.isClear ->
-                noData()
+            // Routed on what the radar could tell us, never inferred from the rider's
+            // confidence. A stationary rider under a genuinely clear sky has no heading
+            // to project along and nothing nearby to report, which used to be
+            // indistinguishable from a dead radar feed and was announced as "No radar
+            // data" — a false alarm about the app rather than about the weather.
+            forecast.availability == RainForecast.Availability.NO_RADAR -> noData()
+
+            forecast.availability == RainForecast.Availability.STALE ->
+                staleData(forecast.frameAgeSeconds)
 
             encounter != null -> fromEncounter(forecast, encounter, units, evasion, home)
 
@@ -210,6 +217,28 @@ object MessageComposer {
         alertTitle = "No radar data",
         alertDetail = null,
     )
+
+    /**
+     * The frame in hand is too old to reason from.
+     *
+     * Given its own wording rather than folded into [noData] because the age is the
+     * useful part: a rider told "radar 24 min old" knows the feed stalled and roughly
+     * when, and can weigh that against what they can see out of their own eyes.
+     */
+    private fun staleData(frameAgeSeconds: Long): RainMessage {
+        val minutes = (frameAgeSeconds / 60.0).roundToInt()
+        return RainMessage(
+            severity = Severity.UNKNOWN,
+            headline = "Radar $minutes min old",
+            headlineShort = "Stale ${minutes}m",
+            headlineMinimal = "--",
+            details = listOf(RainMessage.Detail("too old to forecast", "stale")),
+            qualifier = null,
+            qualifierMark = null,
+            alertTitle = "Radar data stale",
+            alertDetail = null,
+        )
+    }
 
     private fun clear(forecast: RainForecast): RainMessage {
         val horizon = forecast.horizonMinutes.roundToInt()

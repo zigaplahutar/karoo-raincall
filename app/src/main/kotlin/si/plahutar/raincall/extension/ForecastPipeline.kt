@@ -6,6 +6,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import si.plahutar.raincall.alert.AlertPolicy
@@ -23,8 +24,7 @@ import si.plahutar.raincall.forecast.WetRoadTracker
 import si.plahutar.raincall.model.RiderState
 import si.plahutar.raincall.radar.CellMotionEstimator
 import si.plahutar.raincall.radar.RadarField
-import si.plahutar.raincall.radar.RadarRepository
-import si.plahutar.raincall.radar.RainViewerApi
+import si.plahutar.raincall.radar.RadarSource
 
 /**
  * The loop that turns radar and rider position into something on the screen.
@@ -35,7 +35,7 @@ import si.plahutar.raincall.radar.RainViewerApi
  * and their ETA changes even when the weather does not.
  */
 class ForecastPipeline(
-    private val repository: RadarRepository,
+    private val repository: RadarSource,
     private val riderStates: StateFlow<RiderState?>,
     private val units: () -> DisplayUnits,
     private val onAlert: (AlertRequest) -> Unit,
@@ -72,9 +72,13 @@ class ForecastPipeline(
     private val wetRoads = WetRoadTracker()
     private val summary = RideSummaryTracker()
 
-    private var index: RainViewerApi.Index? = null
+    // Written by the radar loop, read by the recompute loop — different coroutines on
+    // different threads. Volatile so a field swapped in by one is actually seen by the
+    // other rather than sitting in a cache line until something else happens to flush it.
+    @Volatile
     private var currentField: RadarField? = null
-    private var previousField: RadarField? = null
+
+    @Volatile
     private var velocity: CellMotionEstimator.CellVelocity? = null
 
     /**
@@ -83,15 +87,16 @@ class ForecastPipeline(
      * Captured from the first fix rather than configured: it is right almost always and
      * asks nothing of the rider.
      */
+    @Volatile
     private var home: HomeContext? = null
 
     fun start(scope: CoroutineScope) {
-        scope.launch { radarLoop(scope) }
-        scope.launch { recomputeLoop(scope) }
+        scope.launch { radarLoop() }
+        scope.launch { recomputeLoop() }
     }
 
-    private suspend fun radarLoop(scope: CoroutineScope) {
-        while (scope.isActive) {
+    private suspend fun radarLoop() {
+        while (currentCoroutineContext().isActive) {
             val rider = riderStates.value
             if (rider == null) {
                 // No fix yet, so nothing to centre a tile window on.
@@ -107,10 +112,18 @@ class ForecastPipeline(
         }
     }
 
+    /**
+     * Look for a newer frame and, if there is one, decode it and re-estimate motion.
+     *
+     * The index is fetched afresh every cycle. It must never be cached across cycles on
+     * the strength of which branch was taken last time: an index held past the point
+     * where a new frame was published reports the same `latest` forever, the
+     * "nothing new" branch below is then taken every cycle, and the radar silently
+     * freezes on whichever frame happened to be current when the ride started. It is a
+     * few kB of JSON; refetching it is the cheap half of this method.
+     */
     private suspend fun refreshRadar(rider: RiderState): Boolean {
-        val idx = index?.takeIf { it.hasNowcast || it.isUsable } ?: repository.fetchIndex()
-        ?: return false
-        index = idx
+        val idx = repository.fetchIndex() ?: return false
 
         val frames = idx.recentPast(2)
         val latest = frames.lastOrNull() ?: return false
@@ -125,7 +138,6 @@ class ForecastPipeline(
             repository.fetchField(idx, it, rider.longitude, rider.latitude)
         }
 
-        previousField = older
         currentField = newest
 
         velocity = if (older != null && older.range == newest.range) {
@@ -148,13 +160,11 @@ class ForecastPipeline(
             null
         }
 
-        // The index is refetched next cycle so new frames are noticed.
-        index = null
         return true
     }
 
-    private suspend fun recomputeLoop(scope: CoroutineScope) {
-        while (scope.isActive) {
+    private suspend fun recomputeLoop() {
+        while (currentCoroutineContext().isActive) {
             runCatching { recompute() }.onFailure { Log.w(TAG, "recompute failed", it) }
             delay(RECOMPUTE_MILLIS)
         }
@@ -224,8 +234,6 @@ class ForecastPipeline(
         repository.clear()
         home = null
         currentField = null
-        previousField = null
         velocity = null
-        index = null
     }
 }

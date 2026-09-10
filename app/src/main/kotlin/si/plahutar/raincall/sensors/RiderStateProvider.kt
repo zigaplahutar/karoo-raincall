@@ -71,6 +71,18 @@ class RiderStateProvider(
      */
     val state: StateFlow<RiderState?> = _state.asStateFlow()
 
+    private val _rideState = MutableStateFlow<RideState>(RideState.Idle)
+
+    /**
+     * The ride's recording state, republished for whoever owns the ride lifecycle.
+     *
+     * Surfaced rather than kept private because more than this class needs it: the
+     * pipeline has per-ride state — where home is, what the ride summary holds, whether
+     * the first forecast has been seen — that must be cleared when a ride ends, and
+     * nothing else knows when that happens.
+     */
+    val rideState: StateFlow<RideState> = _rideState.asStateFlow()
+
     private var latestSpeedAtMillis: Long = 0
     private var latestAccuracyMetres: Double? = null
     private var riding: Boolean = false
@@ -170,6 +182,7 @@ class RiderStateProvider(
             .catch { Log.e(TAG, "ride state stream failed", it) }
             .collect { rideState ->
                 riding = rideState is RideState.Recording
+                _rideState.value = rideState
                 if (!riding) {
                     // A paused or finished ride leaves a stale heading behind that would
                     // otherwise be projected forward when riding resumes elsewhere.
