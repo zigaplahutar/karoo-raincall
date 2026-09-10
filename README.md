@@ -497,6 +497,35 @@ There is no committed Gradle wrapper. CI installs Gradle directly
 
 ---
 
+## Cutting a release
+
+The Karoo installs extensions by reading `manifest.json` from the latest GitHub
+release and downloading the APK it points at, so a release is just a tag.
+
+1. Bump `versionCode` and `versionName` in `app/build.gradle.kts`, and
+   `latestVersion` / `latestVersionCode` in `app/manifest.json` to match.
+2. Commit and push to `main`.
+3. Tag and push the tag:
+
+```
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The tag build runs the tests, assembles the release APK, checks it is actually
+signed, and publishes `raincall.apk` and `manifest.json` to a GitHub release. A
+push to `main` runs the same build but publishes nothing.
+
+`versionCode` is what the Karoo compares to decide an update is available, so a
+release that forgets to raise it will not offer itself to a device that already has
+the previous one.
+
+The release build is signed with the debug key, the same arrangement as
+`karoo-arso-radar`. Nothing in this distribution route checks for an upload key, but
+an APK with no signature at all will not install.
+
+---
+
 ## Running the tests
 
 ```

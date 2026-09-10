@@ -24,6 +24,11 @@ android {
 
     buildTypes {
         release {
+            // Signed with the debug key, the same arrangement as karoo-arso-radar.
+            // The Karoo installs extensions from a GitHub release rather than from
+            // Play, so nothing here checks for an upload key — but an APK with no
+            // signature at all will not install, so the release build has to name one.
+            signingConfig = signingConfigs.getByName("debug")
             isMinifyEnabled = false
         }
     }
