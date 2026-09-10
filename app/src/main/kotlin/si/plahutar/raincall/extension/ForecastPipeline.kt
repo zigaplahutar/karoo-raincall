@@ -61,6 +61,20 @@ class ForecastPipeline(
 
         /** Wait before retrying after a failed fetch. */
         const val RETRY_MILLIS = 60 * 1000L
+
+        /**
+         * Predictions landing this close together are the same forecast, not two.
+         *
+         * The ETA is recomputed every thirty seconds and drifts by a few seconds each
+         * time; without this one shower would be scored dozens of times.
+         */
+        private const val PREDICTION_MERGE_MILLIS = 3 * 60 * 1000L
+
+        /** How late a prediction may be settled before it is discarded unscored. */
+        private const val PREDICTION_GRACE_MILLIS = 2 * 60 * 1000L
+
+        /** Cap so a long ride cannot accumulate predictions without bound. */
+        private const val MAX_PENDING_PREDICTIONS = 32
     }
 
     private val _forecasts = MutableStateFlow(RainForecast.unavailable())
@@ -92,6 +106,13 @@ class ForecastPipeline(
      */
     @Volatile
     private var home: HomeContext? = null
+
+    /**
+     * Warnings issued and not yet checked against what actually happened.
+     *
+     * Confined to the recompute coroutine, which is the only thing that touches it.
+     */
+    private val pendingPredictions = mutableListOf<Prediction>()
 
     fun start(scope: CoroutineScope) {
         scope.launch { radarLoop() }
@@ -218,14 +239,54 @@ class ForecastPipeline(
 
         val atRider = field.sampleAt(rider.longitude, rider.latitude)
         summary.setIntervalMinutes(RECOMPUTE_MILLIS / 60_000.0)
-        summary.observe(atRider)
+        // Only while the ride is running: minutes spent parked before setting off are
+        // not minutes spent in the rain, and counting them would dilute every figure in
+        // the post-ride summary.
+        if (rider.riding) summary.observe(atRider)
         wetRoads.observe(now, atRider.intensity)
 
-        val message = MessageComposer.compose(forecast, units(), evasion, homeAdvice)
+        scorePredictions(now, atRider.isMeaningful)
+        forecast.encounter?.let { recordPrediction(now, it.etaMinutes) }
+
+        val grip = wetRoads.advice(now, rider.speedMetresPerSecond, atRider.isMeaningful)
+        val message = MessageComposer.compose(forecast, units(), evasion, homeAdvice, grip)
         publish(forecast, message)
 
         alertPolicy.evaluate(forecast, message, rider.riding, now)?.let(onAlert)
     }
+
+    /**
+     * Note that rain was predicted for a particular moment, so it can be checked later.
+     *
+     * The accuracy figure in the post-ride summary is the one number that says whether
+     * any of this is worth believing, and it was permanently null because nothing ever
+     * recorded a prediction to score. One outstanding prediction per ETA is enough:
+     * re-recording the same encounter every thirty seconds would count a single correct
+     * forecast sixty times over and flatter the figure into meaninglessness.
+     */
+    private fun recordPrediction(nowMillis: Long, etaMinutes: Double) {
+        if (etaMinutes <= 0.0) return
+        val dueAt = nowMillis + (etaMinutes * 60_000L).toLong()
+        val alreadyTracking = pendingPredictions.any {
+            kotlin.math.abs(it.dueAtMillis - dueAt) < PREDICTION_MERGE_MILLIS
+        }
+        if (alreadyTracking) return
+        if (pendingPredictions.size >= MAX_PENDING_PREDICTIONS) return
+        pendingPredictions.add(Prediction(dueAtMillis = dueAt, etaMinutes = etaMinutes))
+    }
+
+    /** Settle any predictions whose moment has arrived. */
+    private fun scorePredictions(nowMillis: Long, wetNow: Boolean) {
+        val due = pendingPredictions.filter { nowMillis >= it.dueAtMillis }
+        if (due.isEmpty()) return
+        pendingPredictions.removeAll(due)
+        // Anything much older than its due time was missed rather than wrong — the loop
+        // stalled, or the app was asleep — and scoring it either way would be a guess.
+        due.filter { nowMillis - it.dueAtMillis <= PREDICTION_GRACE_MILLIS }
+            .forEach { summary.recordPrediction(it.etaMinutes, wetNow) }
+    }
+
+    private data class Prediction(val dueAtMillis: Long, val etaMinutes: Double)
 
     private fun publish(forecast: RainForecast, message: RainMessage) {
         _forecasts.value = forecast
@@ -253,5 +314,6 @@ class ForecastPipeline(
         home = null
         currentField = null
         velocity = null
+        pendingPredictions.clear()
     }
 }

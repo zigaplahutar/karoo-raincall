@@ -11,6 +11,18 @@
         android:label="@string/app_name"
         android:supportsRtl="false">
 
+        <!-- Attribution and the post-ride summary. RainViewer's free terms require the
+             attribution to stay visible in the app, so this screen is not optional. -->
+        <activity
+            android:name=".ui.AboutActivity"
+            android:exported="true"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
         <service
             android:name=".extension.RainCallExtension"
             android:exported="true"

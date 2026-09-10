@@ -9,4 +9,8 @@
          stay visible in the app; it is not decoration we can drop for space. -->
     <string name="rainviewer_attribution">Weather data by RainViewer</string>
     <string name="rainviewer_url">https://www.rainviewer.com/</string>
+
+    <string name="about_blurb">Text-based storm warnings: when rain will reach you, how hard, and which way to go to avoid it. Everything runs on this device.</string>
+    <string name="about_last_ride">Last ride</string>
+    <string name="about_data_source">Data source</string>
 </resources>

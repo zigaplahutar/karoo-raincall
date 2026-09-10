@@ -178,11 +178,18 @@ data class RainMessage(
  */
 object MessageComposer {
 
+    /**
+     * @param wetRoads grip warning after the rain has stopped, or null. Shown as an
+     *        ordinary detail line: the roads staying slippery is exactly the fact a
+     *        rider forgets once the sky clears, and the first dry corner is where it
+     *        costs them.
+     */
     fun compose(
         forecast: RainForecast,
         units: DisplayUnits = DisplayUnits.METRIC,
         evasion: EvasionEvaluator.Advice = EvasionEvaluator.Advice.Unknown,
         home: HomeEvaluator.HomeAdvice? = null,
+        wetRoads: String? = null,
     ): RainMessage {
         val encounter = forecast.encounter
         val nearest = forecast.nearest
@@ -198,11 +205,12 @@ object MessageComposer {
             forecast.availability == RainForecast.Availability.STALE ->
                 staleData(forecast.frameAgeSeconds)
 
-            encounter != null -> fromEncounter(forecast, encounter, units, evasion, home)
+            encounter != null ->
+                fromEncounter(forecast, encounter, units, evasion, home, wetRoads)
 
-            nearest != null -> fromNearestOnly(forecast, nearest, units)
+            nearest != null -> fromNearestOnly(forecast, nearest, units, wetRoads)
 
-            else -> clear(forecast)
+            else -> clear(forecast, wetRoads)
         }
     }
 
@@ -240,7 +248,7 @@ object MessageComposer {
         )
     }
 
-    private fun clear(forecast: RainForecast): RainMessage {
+    private fun clear(forecast: RainForecast, wetRoads: String? = null): RainMessage {
         val horizon = forecast.horizonMinutes.roundToInt()
         return RainMessage(
             severity = Severity.CLEAR,
@@ -249,7 +257,7 @@ object MessageComposer {
             headline = if (horizon > 0) "Clear for ${horizon} min" else "No rain nearby",
             headlineShort = "Clear",
             headlineMinimal = "OK",
-            details = emptyList(),
+            details = listOfNotNull(wetRoads?.let { RainMessage.Detail(it, "wet roads") }),
             qualifier = null,
             qualifierMark = null,
             alertTitle = "Clear",
@@ -263,6 +271,7 @@ object MessageComposer {
         units: DisplayUnits,
         evasion: EvasionEvaluator.Advice,
         home: HomeEvaluator.HomeAdvice?,
+        wetRoads: String?,
     ): RainMessage {
         val noun = precipNoun(encounter.type)
         val eta = encounter.etaMinutes.roundToInt()
@@ -319,6 +328,10 @@ object MessageComposer {
             }
         }
 
+        // Last, because rain that is still coming outranks roads left over from rain
+        // that has been.
+        wetRoads?.let { details.add(RainMessage.Detail(it, "wet roads")) }
+
         val severity = severityOf(encounter.intensity, encounter.possibleHail)
 
         val alertTitle = when {
@@ -340,6 +353,7 @@ object MessageComposer {
                         if (home.minutes <= 0.0) " · turn for home now"
                         else " · turn home within ${home.minutes.roundToInt()} min"
                     )
+
                 // Actionable in its own right: getting soaked is decided, but how long
                 // for is not. Worth the interruption in a way "no better route" is not.
                 homeLine != null && home is HomeEvaluator.HomeAdvice.WetWhateverYouDo &&
@@ -387,6 +401,7 @@ object MessageComposer {
         forecast: RainForecast,
         nearest: NearestRain,
         units: DisplayUnits,
+        wetRoads: String? = null,
     ): RainMessage {
         val noun = precipNoun(nearest.type)
         val distance = formatDistance(nearest.distanceMetres, units)
@@ -398,6 +413,7 @@ object MessageComposer {
         if (nearest.possibleHail) {
             details.add(RainMessage.Detail("possible hail", "hail?"))
         }
+        wetRoads?.let { details.add(RainMessage.Detail(it, "wet roads")) }
 
         return RainMessage(
             severity = Severity.CLEAR,
@@ -462,14 +478,16 @@ object MessageComposer {
      * glance, and at that range the exact figure starts to matter.
      */
     internal fun formatDistance(metres: Double, units: DisplayUnits): String = when (units) {
-        DisplayUnits.METRIC ->
-            if (metres < 1000) "${(metres / 50).roundToInt() * 50} m"
-            else "${round1(metres / 1000.0)} km"
+        DisplayUnits.METRIC -> {
+            // Round first, then decide the unit. Deciding first let 975 m round up to
+            // "1000 m", which is a kilometre written the long way round.
+            val rounded = (metres / 50).roundToInt() * 50
+            if (rounded < 1000) "$rounded m" else "${round1(metres / 1000.0)} km"
+        }
 
         DisplayUnits.IMPERIAL -> {
-            val miles = metres / 1609.344
-            if (miles < 1.0) "${(metres / 1609.344 * 1760 / 50).roundToInt() * 50} yd"
-            else "${round1(miles)} mi"
+            val yards = (metres / 1609.344 * 1760 / 50).roundToInt() * 50
+            if (yards < 1760) "$yards yd" else "${round1(metres / 1609.344)} mi"
         }
     }
 

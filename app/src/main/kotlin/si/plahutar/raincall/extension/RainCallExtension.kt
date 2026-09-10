@@ -35,6 +35,7 @@ class RainCallExtension : KarooExtension(EXTENSION_ID, VERSION) {
     private lateinit var karooSystem: KarooSystemService
     private lateinit var scope: CoroutineScope
     private lateinit var pipeline: ForecastPipeline
+    private lateinit var summaryStore: RideSummaryStore
 
     private val units = MutableStateFlow(DisplayUnits.METRIC)
 
@@ -51,6 +52,7 @@ class RainCallExtension : KarooExtension(EXTENSION_ID, VERSION) {
         super.onCreate()
         scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
+        summaryStore = RideSummaryStore(applicationContext)
         karooSystem = KarooSystemService(applicationContext)
         val presenter = AlertPresenter(karooSystem)
         val riderStates = RiderStateProvider(karooSystem)
@@ -105,7 +107,12 @@ class RainCallExtension : KarooExtension(EXTENSION_ID, VERSION) {
         var wasIdle = true
         riderStates.rideState.collect { state ->
             val idle = state is RideState.Idle
-            if (idle && !wasIdle) pipeline.reset()
+            if (idle && !wasIdle) {
+                // Save before clearing: the numbers become interesting at exactly the
+                // moment the tracker is about to forget them.
+                summaryStore.save(pipeline.rideSummary(), System.currentTimeMillis())
+                pipeline.reset()
+            }
             wasIdle = idle
         }
     }

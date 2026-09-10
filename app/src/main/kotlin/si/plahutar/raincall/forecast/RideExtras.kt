@@ -37,7 +37,13 @@ class WetRoadTracker {
 
     /** Record whether the rider is in precipitation right now. */
     fun observe(nowMillis: Long, intensity: DbzPalette.Intensity) {
-        if (intensity == DbzPalette.Intensity.NONE) return
+        if (intensity == DbzPalette.Intensity.NONE) {
+            // Long enough since the last wetting that the roads have dried and the worst
+            // intensity seen should no longer set the window for the next shower.
+            val wetAt = lastWetAtMillis ?: return
+            if ((nowMillis - wetAt) / 60_000.0 > dryingWindowMinutes()) reset()
+            return
+        }
         lastWetAtMillis = nowMillis
         if (intensity.ordinal > lastIntensity.ordinal) lastIntensity = intensity
     }
@@ -47,6 +53,10 @@ class WetRoadTracker {
      *
      * Returns null while it is still raining — the rider can see that for themselves,
      * and the line is better spent on the forecast.
+     *
+     * A pure query. It used to clear its own state once the window expired, which meant
+     * asking twice could give two different answers; expiry now happens in [observe],
+     * where state changes belong.
      */
     fun advice(nowMillis: Long, speedMetresPerSecond: Double?, rainingNow: Boolean): String? {
         if (rainingNow) return null
@@ -55,18 +65,15 @@ class WetRoadTracker {
 
         val elapsed = (nowMillis - wetAt) / 60_000.0
         if (elapsed < 0) return null
+        if (elapsed > dryingWindowMinutes()) return null
 
-        val window = when (lastIntensity) {
-            DbzPalette.Intensity.HEAVY -> DRYING_HEAVY_MINUTES
-            DbzPalette.Intensity.MODERATE -> DRYING_MODERATE_MINUTES
-            else -> DRYING_LIGHT_MINUTES
-        }
-        if (elapsed > window) {
-            reset()
-            return null
-        }
+        return "wet roads ~${(dryingWindowMinutes() - elapsed).roundToInt()} min"
+    }
 
-        return "wet roads ~${(window - elapsed).roundToInt()} min"
+    private fun dryingWindowMinutes(): Double = when (lastIntensity) {
+        DbzPalette.Intensity.HEAVY -> DRYING_HEAVY_MINUTES
+        DbzPalette.Intensity.MODERATE -> DRYING_MODERATE_MINUTES
+        else -> DRYING_LIGHT_MINUTES
     }
 
     fun reset() {

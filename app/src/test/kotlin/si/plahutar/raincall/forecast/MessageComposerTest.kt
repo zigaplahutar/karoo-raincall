@@ -205,6 +205,9 @@ class MessageComposerTest {
         // Under a kilometre, metres read better than a decimal fraction.
         assertEquals("400 m", m(410.0))
         assertEquals("950 m", m(940.0))
+        // Just under a kilometre must not round up into "1000 m", which is a kilometre
+        // written the long way round.
+        assertEquals("1 km", m(975.0))
         assertEquals("1.2 km", m(1230.0))
         assertEquals("10.6 km", m(10608.0))
         assertEquals("60 km", m(60000.0))
