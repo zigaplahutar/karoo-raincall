@@ -177,8 +177,14 @@ object CellMotionEstimator {
                 centreY = estimateY / factor
             }
 
-            val margin = maxOf(2, radius + 1)
+            // Fixed rather than scaled to the search radius: at the coarsest level the
+            // radius is wide enough that inset-by-radius would shrink the compared
+            // window to a sliver too small for the blobs to fall inside, leaving the
+            // "match" decided by whatever noise happened to be in that corner.
+            val margin = maxOf(2, REFINE_RADIUS + 1)
             if (a.width <= 2 * margin || a.height <= 2 * margin) continue
+
+            val aValidCount = validCount(a, margin)
 
             var bestX = centreX
             var bestY = centreY
@@ -186,7 +192,7 @@ object CellMotionEstimator {
 
             for (dy in (centreY - radius)..(centreY + radius)) {
                 for (dx in (centreX - radius)..(centreX + radius)) {
-                    val score = meanAbsoluteDifference(a, b, dx, dy, margin)
+                    val score = meanAbsoluteDifference(a, b, dx, dy, margin, aValidCount)
                     if (score < bestScore) {
                         bestScore = score
                         bestX = dx
@@ -219,6 +225,13 @@ object CellMotionEstimator {
      *
      * Pixels that are no-data in either field are skipped rather than treated as zero,
      * so a gap in radar coverage does not read as agreement.
+     *
+     * A shift near the edge of the search window can leave only a handful of pixels
+     * overlapping real precipitation — and a mean over a handful of pixels can land on
+     * zero by pure luck, beating the true alignment's honest, noise-sized error. So a
+     * candidate is only scored if it recovers a substantial share of [aValidCount], the
+     * precipitation [a] actually has to offer in this window; otherwise it is reported
+     * as unusable, the same as no overlap at all.
      */
     private fun meanAbsoluteDifference(
         a: RadarField,
@@ -226,6 +239,7 @@ object CellMotionEstimator {
         dx: Int,
         dy: Int,
         margin: Int,
+        aValidCount: Int,
     ): Double {
         var total = 0L
         var count = 0
@@ -246,7 +260,22 @@ object CellMotionEstimator {
             }
         }
 
-        return if (count == 0) Double.MAX_VALUE else total.toDouble() / count
+        if (count < aValidCount * MIN_SAMPLE_FRACTION) return Double.MAX_VALUE
+        return total.toDouble() / count
+    }
+
+    /** How many of [aValidCount]'s pixels a candidate must recover to be trusted. */
+    private const val MIN_SAMPLE_FRACTION = 0.5
+
+    /** Pixels carrying real precipitation inside the [margin] inset of [field]. */
+    private fun validCount(field: RadarField, margin: Int): Int {
+        var count = 0
+        for (y in margin until (field.height - margin)) {
+            for (x in margin until (field.width - margin)) {
+                if (field.dbz[y * field.width + x] != RadarField.NO_DATA) count++
+            }
+        }
+        return count
     }
 
     /**
@@ -273,7 +302,8 @@ object CellMotionEstimator {
         val margin = maxOf(2, radius + 1)
         if (a.width <= 2 * margin || a.height <= 2 * margin) return 0.0
 
-        val bestScore = meanAbsoluteDifference(a, b, dx / factor, dy / factor, margin)
+        val aValidCount = validCount(a, margin)
+        val bestScore = meanAbsoluteDifference(a, b, dx / factor, dy / factor, margin, aValidCount)
         if (bestScore == Double.MAX_VALUE) return 0.0
 
         var total = 0.0
@@ -284,7 +314,7 @@ object CellMotionEstimator {
             while (offsetX <= radius) {
                 val nearWinner = abs(offsetX - dx / factor) <= 1 && abs(offsetY - dy / factor) <= 1
                 if (!nearWinner) {
-                    val score = meanAbsoluteDifference(a, b, offsetX, offsetY, margin)
+                    val score = meanAbsoluteDifference(a, b, offsetX, offsetY, margin, aValidCount)
                     if (score != Double.MAX_VALUE) {
                         total += score
                         count++

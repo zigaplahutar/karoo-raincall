@@ -124,6 +124,18 @@ class AlertPolicy(
      */
     private var seenFirstForecast: Boolean = false
 
+    /**
+     * A threshold crossed while a cooldown blocked the alert, waiting to see whether
+     * it is still crossed once the cooldown lifts.
+     *
+     * If the ETA recovers above it first, the crossing is abandoned — but abandoned
+     * is not the same as never having happened: the threshold is marked spent right
+     * then, so a later, unrelated dip back below it does not get treated as a fresh
+     * crossing. Without this, a single threshold could fire once per wobble instead
+     * of once per episode, just by being blocked at the wrong moment.
+     */
+    private var pendingThreshold: Double? = null
+
     /** Evaluate the latest forecast. Returns an alert to show, or null. */
     fun evaluate(
         forecast: RainForecast,
@@ -157,6 +169,15 @@ class AlertPolicy(
             return null
         }
 
+        pendingThreshold?.let { pending ->
+            if (encounter.etaMinutes > pending) {
+                // Recovered before the cooldown lifted: this crossing does not get to
+                // fire, but it did happen, so it does not get to fire later either.
+                firedThresholds.add(pending)
+                pendingThreshold = null
+            }
+        }
+
         val hailIsNew = message.severity == Severity.HAIL && warnedSeverity != Severity.HAIL
         val worsened = message.severity.ordinal > warnedSeverity.ordinal
 
@@ -178,14 +199,19 @@ class AlertPolicy(
             worsened && episodeAlerted -> AlertRequest.Reason.WORSENED
             crossed != null -> AlertRequest.Reason.APPROACHING
             else -> null
-        } ?: run {
-            // Nothing new. Still record thresholds passed silently during a cooldown so
-            // they do not fire late, once the cooldown lifts, for an ETA that has since
-            // moved on.
+        } ?: return null
+
+        if (!allowed) {
+            // Still crossed, just cooled down. Remember it so a later call can either
+            // fire it (ETA still down there once the cooldown lifts) or spend it
+            // silently (ETA recovered first) — see [pendingThreshold].
+            if (reason == AlertRequest.Reason.APPROACHING) {
+                pendingThreshold = crossed
+            }
             return null
         }
 
-        if (!allowed) return null
+        pendingThreshold = null
 
         // Mark every threshold at or above the current ETA as spent, not just the one
         // that triggered. Otherwise an ETA that jumps from 22 to 4 minutes between
@@ -254,6 +280,7 @@ class AlertPolicy(
         warnedSeverity = Severity.CLEAR
         episodeAlerted = false
         clearSinceMillis = null
+        pendingThreshold = null
     }
 
     /** Called when a ride ends or is reset. */

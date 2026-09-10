@@ -99,6 +99,59 @@ class CellMotionEstimatorTest {
     }
 
     @Test
+    fun `a known shift is recovered at the size the app actually uses`() {
+        // The other tests run on a 256 px field, which is a quarter of the smallest
+        // window the repository ever builds. That matters for the overlap rule: a
+        // candidate offset is only scored if it recovers at least half the precipitation
+        // the older frame has to offer, and at 256 px the widest search offset only just
+        // clears that bar. At the 1024 px the device works with there is far more room,
+        // but "far more room" was an argument rather than a test until this one.
+        val bigSize = 1024
+        val bigRange = TileMath.TileRange(
+            zoom = zoom, tileSize = tileSize,
+            minTileX = 137, maxTileX = 138, minTileY = 90, maxTileY = 91,
+        )
+
+        fun bigField(shiftX: Int, shiftY: Int, seed: Int, time: Long): RadarField {
+            val random = Random(seed)
+            val f = RadarField.empty(bigSize, bigSize, bigRange, time)
+            val blobs = listOf(
+                Blob(320.0, 360.0, 45.0, 72.0),
+                Blob(680.0, 600.0, 55.0, 48.0),
+                Blob(480.0, 800.0, 30.0, 88.0),
+            )
+            for (y in 0 until bigSize) {
+                for (x in 0 until bigSize) {
+                    var value = 0.0
+                    for (b in blobs) {
+                        val dx = (x - shiftX) - b.cx
+                        val dy = (y - shiftY) - b.cy
+                        value += b.amp * exp(-(dx * dx + dy * dy) / (2 * b.sigma * b.sigma))
+                    }
+                    value += (random.nextDouble() * 2 - 1)
+                    val dbz = value.toInt()
+                    f.set(
+                        x, y,
+                        if (dbz <= 0) DbzPalette.Sample.EMPTY
+                        else DbzPalette.Sample(dbz, DbzPalette.PrecipType.RAIN),
+                    )
+                }
+            }
+            return f
+        }
+
+        for ((dx, dy) in listOf(0 to 0, 24 to -16, -50 to 60, -78 to 44)) {
+            val older = bigField(0, 0, seed = 1, time = 0)
+            val newer = bigField(dx, dy, seed = 2, time = 600)
+
+            val result = CellMotionEstimator.estimate(older, newer)
+            assertNotNull("no vector for shift ($dx,$dy) at 1024 px", result)
+            assertEquals("dx for shift ($dx,$dy)", dx, result!!.dxPixels)
+            assertEquals("dy for shift ($dx,$dy)", dy, result.dyPixels)
+        }
+    }
+
+    @Test
     fun `structured rain produces high confidence`() {
         val older = field(standardBlobs, noise = 1.0, seed = 1, timeEpochSeconds = 0)
         val newer = field(
