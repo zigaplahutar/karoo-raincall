@@ -169,30 +169,29 @@ data class RiderState(
  * every ETA is out by a factor of 3.6, which is exactly the kind of error that looks
  * plausible on screen.
  *
- * So rather than trust it silently, values are checked against what a bicycle can
- * actually do. A steady reading of 30 "m/s" is 108 km/h, which is not a person on a
- * bike; that is the signature of a km/h stream being read as m/s.
+ * Deciding the unit is [SpeedUnitCalibrator]'s job, and it does it by cross-checking the
+ * stream against GPS displacement rather than by magnitude — because magnitude cannot:
+ * a rider at 20 km/h reports the number 20, which is a perfectly plausible m/s value.
+ * What is left for this object is the narrower task of throwing out readings no bicycle
+ * could produce in any unit: a NaN, a negative, a GPS jump.
  */
 object SpeedSanity {
 
-    /** Fastest plausible sustained bicycle speed in m/s. 20 m/s is 72 km/h. */
-    const val MAX_PLAUSIBLE_MPS = 20.0
-
-    /** Above this, a value is almost certainly km/h mislabelled. 25 m/s is 90 km/h. */
-    const val IMPLAUSIBLE_MPS = 25.0
+    /**
+     * Fastest plausible bicycle speed in m/s. 30 m/s is 108 km/h.
+     *
+     * Generous on purpose. This is no longer the unit detector — [SpeedUnitCalibrator]
+     * settles that against GPS displacement, which a magnitude check cannot — so all
+     * this has to do is reject genuine nonsense. Set at 20 m/s it rejected any descent
+     * over 72 km/h, which turned `speed` to null, `canProject` to false and confidence
+     * to NONE: the app went blind on exactly the sort of long alpine descent where a
+     * rider is covering ground fastest and most wants to know what is ahead.
+     */
+    const val MAX_PLAUSIBLE_MPS = 30.0
 
     /** True when the value sits in the range a bicycle can actually reach. */
     fun isPlausibleMetresPerSecond(value: Double): Boolean =
         value.isFinite() && value >= 0.0 && value <= MAX_PLAUSIBLE_MPS
-
-    /**
-     * Whether a reading looks like it arrived in the wrong unit.
-     *
-     * A single spike is not evidence — GPS glitches happen. The provider only acts on
-     * this after it holds across several consecutive readings.
-     */
-    fun looksLikeKilometresPerHour(value: Double): Boolean =
-        value.isFinite() && value > IMPLAUSIBLE_MPS
 
     const val KMH_TO_MPS = 1.0 / 3.6
 }

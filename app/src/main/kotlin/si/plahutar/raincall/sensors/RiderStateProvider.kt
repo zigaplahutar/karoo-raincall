@@ -11,7 +11,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import si.plahutar.raincall.model.RiderState
 import si.plahutar.raincall.model.SpeedSanity
@@ -50,6 +52,27 @@ class RiderStateProvider(
          * keep projecting a rider who may have stopped entirely.
          */
         private const val SPEED_STALE_MILLIS = 15_000L
+
+        /**
+         * A position fix older than this stops counting as where the rider is.
+         *
+         * The state is only rewritten when a location event arrives, so without this a
+         * lost fix — a tunnel, a gorge, a receiver that gave up — leaves the last known
+         * position in place indefinitely while the pipeline goes on forecasting from it
+         * as though it were current. The rider gets an ETA for somewhere they left
+         * twenty minutes ago, delivered with the same confidence as any other.
+         *
+         * Sixty seconds is long enough to ride through a short tunnel without the field
+         * blinking, short enough that a real outage is admitted quickly.
+         */
+        private const val FIX_STALE_MILLIS = 60_000L
+
+        /** How often to check whether the fix has gone stale. */
+        private const val FIX_WATCHDOG_MILLIS = 10_000L
+
+        /** First retry delay after a stream fails; doubles up to [MAX_RETRY_MILLIS]. */
+        private const val BASE_RETRY_MILLIS = 1_000L
+        private const val MAX_RETRY_MILLIS = 30_000L
     }
 
     private val headingTracker = HeadingTracker()
@@ -83,11 +106,19 @@ class RiderStateProvider(
      */
     val rideState: StateFlow<RideState> = _rideState.asStateFlow()
 
+    // Each of these is written by one collector coroutine and read by another, so the
+    // writes have to be visible across threads rather than merely eventually.
+    @Volatile
     private var latestSpeedAtMillis: Long = 0
+
+    @Volatile
     private var latestAccuracyMetres: Double? = null
+
+    @Volatile
     private var riding: Boolean = false
 
     /** Raw speed exactly as the stream reported it, before unit conversion. */
+    @Volatile
     private var latestRawSpeed: Double? = null
 
     /** Logged once so the decision is visible without spamming every fix. */
@@ -105,11 +136,52 @@ class RiderStateProvider(
         scope.launch { collectAccuracy() }
         scope.launch { collectSpeed() }
         scope.launch { collectRideState() }
+        scope.launch { watchForLostFix() }
+    }
+
+    /**
+     * Keep retrying a Karoo stream that fails.
+     *
+     * Without this a single transient failure is permanent: `catch` swallows the error
+     * and *completes* the flow, so the collector returns and that sensor is gone for the
+     * rest of the process. The location stream failing once would leave RainCall
+     * forecasting from a frozen position for the remainder of the ride, with nothing on
+     * screen to suggest anything had gone wrong.
+     *
+     * Backs off so a persistently broken stream does not spin.
+     */
+    private fun <T> Flow<T>.retryingForever(what: String): Flow<T> =
+        retryWhen { cause, attempt ->
+            val delayMillis = (BASE_RETRY_MILLIS shl attempt.toInt().coerceAtMost(5))
+                .coerceAtMost(MAX_RETRY_MILLIS)
+            Log.w(TAG, "$what stream failed (attempt $attempt), retrying in ${delayMillis}ms", cause)
+            delay(delayMillis)
+            true
+        }
+
+    /**
+     * Drop the rider state when the fix goes stale.
+     *
+     * Publishing null rather than a stale position makes consumers show "waiting for
+     * GPS", which is the truth. A position that is quietly an hour old is worse than no
+     * position, because it still looks like an answer.
+     */
+    private suspend fun watchForLostFix() {
+        while (true) {
+            delay(FIX_WATCHDOG_MILLIS)
+            val current = _state.value ?: continue
+            if (clock() - current.timestampMillis > FIX_STALE_MILLIS) {
+                Log.w(TAG, "no position fix for ${FIX_STALE_MILLIS / 1000}s; dropping rider state")
+                _state.value = null
+                headingTracker.clear()
+            }
+        }
     }
 
     private suspend fun collectLocation() {
         karooSystem.consumerFlow<OnLocationChanged>()
-            .catch { Log.e(TAG, "location stream failed", it) }
+            .retryingForever("location")
+            .catch { Log.e(TAG, "location stream gave up", it) }
             .collect { event ->
                 val now = clock()
 
@@ -161,7 +233,8 @@ class RiderStateProvider(
      */
     private suspend fun collectAccuracy() {
         karooSystem.streamDataPoints(DataType.Type.LOCATION)
-            .catch { Log.e(TAG, "location data type stream failed", it) }
+            .retryingForever("location data type")
+            .catch { Log.e(TAG, "location data type stream gave up", it) }
             .collect { dataPoint ->
                 latestAccuracyMetres = dataPoint.values[DataType.Field.LOC_ACCURACY]
             }
@@ -169,7 +242,8 @@ class RiderStateProvider(
 
     private suspend fun collectSpeed() {
         karooSystem.streamDataPoints(DataType.Type.SMOOTHED_3S_AVERAGE_SPEED)
-            .catch { Log.e(TAG, "speed stream failed", it) }
+            .retryingForever("speed")
+            .catch { Log.e(TAG, "speed stream gave up", it) }
             .collect { dataPoint ->
                 val raw = dataPoint.singleValue ?: return@collect
                 latestRawSpeed = raw
@@ -179,7 +253,8 @@ class RiderStateProvider(
 
     private suspend fun collectRideState() {
         karooSystem.consumerFlow<RideState>()
-            .catch { Log.e(TAG, "ride state stream failed", it) }
+            .retryingForever("ride state")
+            .catch { Log.e(TAG, "ride state stream gave up", it) }
             .collect { rideState ->
                 riding = rideState is RideState.Recording
                 _rideState.value = rideState

@@ -4,6 +4,7 @@ import io.hammerhead.karooext.KarooSystemService
 import io.hammerhead.karooext.extension.DataTypeImpl
 import io.hammerhead.karooext.extension.KarooExtension
 import io.hammerhead.karooext.models.RideState
+import io.hammerhead.karooext.models.UserProfile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -14,6 +15,7 @@ import si.plahutar.raincall.alert.AlertPresenter
 import si.plahutar.raincall.forecast.DisplayUnits
 import si.plahutar.raincall.radar.RadarRepository
 import si.plahutar.raincall.sensors.RiderStateProvider
+import si.plahutar.raincall.sensors.consumerFlow
 
 /**
  * The extension service Karoo binds to.
@@ -65,6 +67,25 @@ class RainCallExtension : KarooExtension(EXTENSION_ID, VERSION) {
                 riderStates.start(scope)
                 pipeline.start(scope)
                 scope.launch { watchRideLifecycle(riderStates) }
+                scope.launch { followUnitPreference() }
+            }
+        }
+    }
+
+    /**
+     * Follow the rider's distance-unit preference.
+     *
+     * The formatting for miles and yards was written and tested from the start, but
+     * nothing ever set this, so it was unreachable: a rider with the Karoo in imperial
+     * got kilometres from RainCall alone, which reads as a bug in the field rather than
+     * as a setting. `preferredUnit.distance` is the same switch the rest of the computer
+     * obeys, so following it is what makes the extension look native.
+     */
+    private suspend fun followUnitPreference() {
+        karooSystem.consumerFlow<UserProfile>().collect { profile ->
+            units.value = when (profile.preferredUnit.distance) {
+                UserProfile.PreferredUnit.UnitType.IMPERIAL -> DisplayUnits.IMPERIAL
+                else -> DisplayUnits.METRIC
             }
         }
     }

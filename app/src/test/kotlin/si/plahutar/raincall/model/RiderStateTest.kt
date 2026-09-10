@@ -146,36 +146,27 @@ class SpeedSanityTest {
     }
 
     @Test
-    fun `impossible values are rejected`() {
-        assertFalse(SpeedSanity.isPlausibleMetresPerSecond(-1.0))
-        assertFalse(SpeedSanity.isPlausibleMetresPerSecond(25.0))
-        assertFalse(SpeedSanity.isPlausibleMetresPerSecond(Double.NaN))
-        assertFalse(SpeedSanity.isPlausibleMetresPerSecond(Double.POSITIVE_INFINITY))
+    fun `a fast descent is still a bicycle and keeps its forecast`() {
+        // The ceiling used to sit at 20 m/s, so anything quicker was discarded as
+        // implausible — which turned speed to null, canProject to false and confidence
+        // to NONE. The app went blind above 72 km/h: on a long alpine descent the rider
+        // covers ground fastest and gets told least. Deciding the unit is
+        // SpeedUnitCalibrator's job, so this only has to reject genuine nonsense.
+        assertTrue("25 m/s is 90 km/h — quick, but a bicycle", SpeedSanity.isPlausibleMetresPerSecond(25.0))
+        assertTrue("30 m/s is 108 km/h — the record books, but physical", SpeedSanity.isPlausibleMetresPerSecond(30.0))
     }
 
     @Test
-    fun `a km per hour stream is recognisable by its magnitude`() {
-        // 30 km/h arriving as the number 30 would be 108 km/h if read as m/s.
-        assertTrue(SpeedSanity.looksLikeKilometresPerHour(30.0))
-        assertTrue(SpeedSanity.looksLikeKilometresPerHour(45.0))
-
-        // Genuine bicycle speeds in m/s must never trip this.
-        assertFalse(SpeedSanity.looksLikeKilometresPerHour(11.1))
-        assertFalse(SpeedSanity.looksLikeKilometresPerHour(20.0))
+    fun `impossible values are rejected`() {
+        assertFalse(SpeedSanity.isPlausibleMetresPerSecond(-1.0))
+        assertFalse("40 m/s is 144 km/h; not a bicycle in any unit", SpeedSanity.isPlausibleMetresPerSecond(40.0))
+        assertFalse(SpeedSanity.isPlausibleMetresPerSecond(Double.NaN))
+        assertFalse(SpeedSanity.isPlausibleMetresPerSecond(Double.POSITIVE_INFINITY))
     }
 
     @Test
     fun `the conversion factor is right`() {
         assertEquals(10.0, 36.0 * SpeedSanity.KMH_TO_MPS, 1e-9)
         assertEquals(5.0, 18.0 * SpeedSanity.KMH_TO_MPS, 1e-9)
-    }
-
-    @Test
-    fun `there is a deliberate dead zone between plausible and clearly wrong`() {
-        // 20 to 25 m/s is 72 to 90 km/h: too fast to trust, not fast enough to prove a
-        // unit mismatch. Values here are discarded rather than acted on either way.
-        val ambiguous = 22.0
-        assertFalse(SpeedSanity.isPlausibleMetresPerSecond(ambiguous))
-        assertFalse(SpeedSanity.looksLikeKilometresPerHour(ambiguous))
     }
 }
