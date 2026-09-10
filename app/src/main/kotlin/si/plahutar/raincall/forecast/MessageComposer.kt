@@ -340,6 +340,18 @@ object MessageComposer {
                         if (home.minutes <= 0.0) " · turn for home now"
                         else " · turn home within ${home.minutes.roundToInt()} min"
                     )
+                // Actionable in its own right: getting soaked is decided, but how long
+                // for is not. Worth the interruption in a way "no better route" is not.
+                homeLine != null && home is HomeEvaluator.HomeAdvice.WetWhateverYouDo &&
+                    home.directArrivalMinutes != null ->
+                    append(
+                        if (home.leavesRoute) {
+                            " · wet anyway, straight home ${home.directArrivalMinutes.roundToInt()} min"
+                        } else {
+                            " · wet anyway, home in ${home.directArrivalMinutes.roundToInt()} min"
+                        }
+                    )
+
                 else -> when (evasion) {
                     is EvasionEvaluator.Advice.Detour -> append(" · head ${evasion.compass}")
                     is EvasionEvaluator.Advice.Wait ->

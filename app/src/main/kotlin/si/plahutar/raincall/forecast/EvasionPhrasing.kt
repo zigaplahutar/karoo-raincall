@@ -36,9 +36,25 @@ object EvasionPhrasing {
                 RainMessage.Detail("turn home within $minutes min", "home in $minutes m")
             }
 
+        // Staying dry is no longer on the table, so the useful advice changes from "how
+        // do I dodge this" to "how do I get it over with soonest". Naming the arrival
+        // time gives the rider something to decide on; "wet whatever you do" on its own
+        // tells them only what they can already feel.
         is HomeEvaluator.HomeAdvice.WetWhateverYouDo -> {
-            val wet = advice.wetMinutes.roundToInt()
-            RainMessage.Detail("wet home whenever, $wet min", "wet home")
+            val arrival = advice.directArrivalMinutes?.roundToInt()
+            when {
+                arrival == null -> {
+                    val wet = advice.wetMinutes.roundToInt()
+                    RainMessage.Detail("wet home whenever, $wet min", "wet home")
+                }
+                // A rider who has followed a route all morning deserves to hear that
+                // this cuts away from it, rather than working it out at the next junction.
+                advice.leavesRoute ->
+                    RainMessage.Detail("wet anyway · straight home $arrival min", "home $arrival min")
+
+                else ->
+                    RainMessage.Detail("wet anyway, home in $arrival min", "home $arrival min")
+            }
         }
     }
 

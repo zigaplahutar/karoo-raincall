@@ -209,7 +209,12 @@ class ForecastPipeline(
 
         val homeAdvice = destination
             ?.takeIf { rider.canProject }
-            ?.let { HomeEvaluator.evaluate(rider, it, field, velocity, nowSeconds) }
+            ?.let {
+                HomeEvaluator.evaluate(
+                    rider, it, field, velocity, nowSeconds,
+                    onRoute = route != null,
+                )
+            }
 
         val atRider = field.sampleAt(rider.longitude, rider.latitude)
         summary.setIntervalMinutes(RECOMPUTE_MILLIS / 60_000.0)

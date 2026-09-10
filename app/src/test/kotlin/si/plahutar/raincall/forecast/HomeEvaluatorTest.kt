@@ -203,6 +203,83 @@ class HomeEvaluatorTest {
     }
 
     @Test
+    fun `when a soaking is certain the advice becomes how soon it ends`() {
+        // Staying dry is off the table, so the useful question changes: not "how do I
+        // dodge this" but "how do I get it over with". A rider told only that every
+        // option is wet has learned nothing they cannot already feel.
+        val detail = EvasionPhrasing.describeHome(
+            HomeEvaluator.HomeAdvice.WetWhateverYouDo(
+                wetMinutes = 22.0,
+                arrivalMinutes = 40.0,
+                directArrivalMinutes = 18.0,
+            )
+        )!!
+
+        assertTrue("should name the soonest arrival: '${detail.full}'", detail.full.contains("18"))
+        assertTrue("must fit a field", detail.full.length <= 30)
+        assertTrue(detail.short.length <= 14)
+    }
+
+    @Test
+    fun `cutting away from a loaded route is said out loud`() {
+        // A rider who has followed a route all morning should hear that the advice
+        // abandons it, rather than discovering that at the next junction.
+        val onRoute = EvasionPhrasing.describeHome(
+            HomeEvaluator.HomeAdvice.WetWhateverYouDo(
+                wetMinutes = 22.0,
+                arrivalMinutes = 40.0,
+                directArrivalMinutes = 18.0,
+                leavesRoute = true,
+            )
+        )!!
+        val freeRiding = EvasionPhrasing.describeHome(
+            HomeEvaluator.HomeAdvice.WetWhateverYouDo(
+                wetMinutes = 22.0,
+                arrivalMinutes = 40.0,
+                directArrivalMinutes = 18.0,
+                leavesRoute = false,
+            )
+        )!!
+
+        assertTrue("leaving the route must read differently", onRoute.full != freeRiding.full)
+        assertTrue(onRoute.full.contains("straight"))
+    }
+
+    @Test
+    fun `getting home soonest is worth the full-screen interruption`() {
+        // "No better route" is worth a line in the field the rider chose to look at, but
+        // not an interruption. A soaking with a stated end is a different matter.
+        val forecast = RainForecast(
+            nearest = null,
+            encounter = Encounter(
+                etaMinutes = 4.0, durationMinutes = 30.0,
+                intensity = DbzPalette.Intensity.HEAVY,
+                type = DbzPalette.PrecipType.RAIN,
+                possibleHail = false, coneCoverage = 1.0,
+            ),
+            confidence = RiderState.Confidence.HIGH,
+            horizonMinutes = 30.0,
+            frameAgeSeconds = 60,
+        )
+
+        val message = MessageComposer.compose(
+            forecast,
+            DisplayUnits.METRIC,
+            EvasionEvaluator.Advice.NoGoodOption(30.0),
+            HomeEvaluator.HomeAdvice.WetWhateverYouDo(
+                wetMinutes = 25.0,
+                arrivalMinutes = 40.0,
+                directArrivalMinutes = 18.0,
+            ),
+        )
+
+        assertTrue(
+            "alert was '${message.alertDetail}'",
+            message.alertDetail!!.contains("18"),
+        )
+    }
+
+    @Test
     fun `home advice takes precedence over a plain detour in the message`() {
         val forecast = RainForecast(
             nearest = null,

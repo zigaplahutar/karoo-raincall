@@ -85,10 +85,30 @@ object HomeEvaluator {
             val distanceMetres: Double,
         ) : HomeAdvice()
 
-        /** No turnaround gets you home dry; this is the least wet. */
+        /**
+         * No turnaround gets you home dry.
+         *
+         * When staying dry is off the table the useful question changes from "how do I
+         * avoid this" to "how do I get it over with", so this carries the *direct* run
+         * as well as the least-wet one. Told only that every option is wet, a rider
+         * learns nothing they cannot see out of their own eyes; told "wet anyway,
+         * straight home is 18 minutes", they have something to act on.
+         */
         data class WetWhateverYouDo(
+            /** Wet minutes on the least-wet option found. */
             val wetMinutes: Double,
+            /** When that option would arrive. */
             val arrivalMinutes: Double?,
+            /** When turning for home right now would arrive, which is the soonest. */
+            val directArrivalMinutes: Double? = null,
+            /**
+             * Whether heading straight there means abandoning the loaded route.
+             *
+             * Worth saying out loud. A rider who has followed a route all morning should
+             * be told that the advice cuts away from it rather than discovering it at the
+             * next junction.
+             */
+            val leavesRoute: Boolean = false,
         ) : HomeAdvice()
 
         /** Home is too far to say anything useful about within the radar horizon. */
@@ -118,12 +138,17 @@ object HomeEvaluator {
         return abs(TileMath.bearingDelta(heading, bearingHome)) <= HEADING_HOME_TOLERANCE_DEGREES
     }
 
+    /**
+     * @param onRoute whether the rider is following a loaded route, so that advice to
+     *        head straight for the destination can say that it means leaving it.
+     */
     fun evaluate(
         rider: RiderState,
         home: HomeContext,
         field: RadarField,
         cellVelocity: CellMotionEstimator.CellVelocity?,
         nowEpochSeconds: Long,
+        onRoute: Boolean = false,
     ): HomeAdvice? {
         val heading = rider.headingDegrees ?: return null
         val speed = rider.speedMetresPerSecond ?: return null
@@ -160,11 +185,17 @@ object HomeEvaluator {
         // were wet, and a rider under a cloudless sky is handed a countdown.
         var anyWetOption = false
 
+        // Turning for home this instant is always the soonest arrival, so it is the
+        // answer when staying dry is no longer possible.
+        var directArrival: Double? = null
+
         for (outbound in TURNAROUND_OPTIONS_MINUTES) {
             val result = simulate(
                 rider, home, field, speed, heading, outbound,
                 cellSpeed, cellBearing, frameAge,
             )
+            if (outbound == 0.0) directArrival = result.arrivalMinutes
+
             // Too far to get home inside the horizon: says nothing either way.
             if (result.arrivalMinutes == null) continue
 
@@ -173,6 +204,7 @@ object HomeEvaluator {
             val dry = result.fullyObserved && result.wetMinutes <= 0.0
             if (!dry) anyWetOption = true
             if (deadlineStillOpen && dry) latestDry = outbound else deadlineStillOpen = false
+
             if (result.wetMinutes < bestWet) {
                 bestWet = result.wetMinutes
                 bestArrival = result.arrivalMinutes
@@ -187,8 +219,12 @@ object HomeEvaluator {
 
             latestDry != null -> HomeAdvice.TurnAroundWithin(latestDry, distance)
 
-            bestWet != Double.MAX_VALUE ->
-                HomeAdvice.WetWhateverYouDo(bestWet, bestArrival)
+            bestWet != Double.MAX_VALUE -> HomeAdvice.WetWhateverYouDo(
+                wetMinutes = bestWet,
+                arrivalMinutes = bestArrival,
+                directArrivalMinutes = directArrival,
+                leavesRoute = onRoute,
+            )
 
             else -> HomeAdvice.OutOfRange
         }
