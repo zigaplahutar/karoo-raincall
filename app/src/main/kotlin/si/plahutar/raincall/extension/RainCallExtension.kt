@@ -58,6 +58,7 @@ class RainCallExtension : KarooExtension(EXTENSION_ID, VERSION) {
         pipeline = ForecastPipeline(
             repository = RadarRepository(),
             riderStates = riderStates.state,
+            routes = riderStates.route,
             units = { units.value },
             onAlert = presenter::show,
         )

@@ -4,6 +4,7 @@ import android.util.Log
 import io.hammerhead.karooext.KarooSystemService
 import io.hammerhead.karooext.models.DataType
 import io.hammerhead.karooext.models.OnLocationChanged
+import io.hammerhead.karooext.models.OnNavigationState
 import io.hammerhead.karooext.models.RideState
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -16,6 +17,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import si.plahutar.raincall.model.RiderState
+import si.plahutar.raincall.model.RouteContext
 import si.plahutar.raincall.model.SpeedSanity
 
 /**
@@ -106,6 +108,17 @@ class RiderStateProvider(
      */
     val rideState: StateFlow<RideState> = _rideState.asStateFlow()
 
+    private val _route = MutableStateFlow<RouteContext?>(null)
+
+    /**
+     * The loaded route, or null when the rider is navigating nothing.
+     *
+     * Null is the ordinary case and must stay distinguishable: with a route the forecast
+     * follows the road, without one it opens a cone. Handing back an empty route rather
+     * than null would quietly put every free-riding rider on the wrong branch.
+     */
+    val route: StateFlow<RouteContext?> = _route.asStateFlow()
+
     // Each of these is written by one collector coroutine and read by another, so the
     // writes have to be visible across threads rather than merely eventually.
     @Volatile
@@ -136,7 +149,45 @@ class RiderStateProvider(
         scope.launch { collectAccuracy() }
         scope.launch { collectSpeed() }
         scope.launch { collectRideState() }
+        scope.launch { collectNavigationState() }
         scope.launch { watchForLostFix() }
+    }
+
+    /**
+     * Follow whatever the Karoo is navigating.
+     *
+     * Both shapes carry a polyline: a loaded route, and a point-to-point run to a
+     * destination the rider dropped on the map. Either answers the question the cone
+     * exists to guess at, so either is worth having.
+     *
+     * `reversed` matters and is easy to miss — a route ridden backwards ends where the
+     * polyline starts, and taking the wrong end would aim every home-advice answer at
+     * the far side of the ride.
+     */
+    private suspend fun collectNavigationState() {
+        karooSystem.consumerFlow<OnNavigationState>()
+            .retryingForever("navigation")
+            .catch { Log.e(TAG, "navigation stream gave up", it) }
+            .collect { event ->
+                _route.value = when (val state = event.state) {
+                    is OnNavigationState.NavigationState.NavigatingRoute ->
+                        RouteContext.fromPolyline(
+                            encoded = state.routePolyline,
+                            reversed = state.reversed,
+                            name = state.name,
+                        )
+
+                    is OnNavigationState.NavigationState.NavigatingToDestination ->
+                        RouteContext.fromPolyline(
+                            encoded = state.polyline,
+                            reversed = false,
+                            name = state.destination.name,
+                        )
+
+                    // Not navigating: back to the cone.
+                    else -> null
+                }
+            }
     }
 
     /**

@@ -22,6 +22,7 @@ import si.plahutar.raincall.forecast.RainMessage
 import si.plahutar.raincall.forecast.RideSummaryTracker
 import si.plahutar.raincall.forecast.WetRoadTracker
 import si.plahutar.raincall.model.RiderState
+import si.plahutar.raincall.model.RouteContext
 import si.plahutar.raincall.radar.CellMotionEstimator
 import si.plahutar.raincall.radar.RadarField
 import si.plahutar.raincall.radar.RadarSource
@@ -37,6 +38,8 @@ import si.plahutar.raincall.radar.RadarSource
 class ForecastPipeline(
     private val repository: RadarSource,
     private val riderStates: StateFlow<RiderState?>,
+    /** The loaded route, when the rider is navigating one. */
+    private val routes: StateFlow<RouteContext?> = MutableStateFlow(null),
     private val units: () -> DisplayUnits,
     private val onAlert: (AlertRequest) -> Unit,
     private val clock: () -> Long = System::currentTimeMillis,
@@ -183,7 +186,9 @@ class ForecastPipeline(
 
         if (home == null && rider.riding) home = HomeContext(rider.latitude, rider.longitude)
 
-        val forecast = RainForecaster.forecast(rider, field, velocity, nowSeconds)
+        val route = routes.value?.takeIf { it.isUsable }
+
+        val forecast = RainForecaster.forecast(rider, field, velocity, nowSeconds, route)
 
         // Standing still, the cone is meaningless — there is not even a direction. The
         // forecaster already declines to project, so the message degrades to distance
@@ -194,7 +199,15 @@ class ForecastPipeline(
             EvasionEvaluator.Advice.Unknown
         }
 
-        val homeAdvice = home
+        // Where the rider is actually going. A loaded route knows; without one, the
+        // start of the ride is the best available guess and is right most of the time.
+        // Taking the ride's start when a route says otherwise would answer the wrong
+        // question on every point-to-point ride.
+        val destination = route?.destination
+            ?.let { (lon, lat) -> HomeContext(latitude = lat, longitude = lon) }
+            ?: home
+
+        val homeAdvice = destination
             ?.takeIf { rider.canProject }
             ?.let { HomeEvaluator.evaluate(rider, it, field, velocity, nowSeconds) }
 

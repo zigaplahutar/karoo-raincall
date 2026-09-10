@@ -1,6 +1,7 @@
 package si.plahutar.raincall.forecast
 
 import si.plahutar.raincall.model.RiderState
+import si.plahutar.raincall.model.RouteContext
 import si.plahutar.raincall.radar.CellMotionEstimator
 import si.plahutar.raincall.radar.DbzPalette
 import si.plahutar.raincall.radar.RadarField
@@ -75,6 +76,15 @@ object RainForecaster {
     const val MAX_DURATION_MINUTES = 60.0
 
     /**
+     * How far off a route the rider may stray before it stops describing their path.
+     *
+     * Beyond this they have taken a wrong turn, stopped for coffee down a side street,
+     * or the route is simply not the one they are riding — and following it would put the
+     * forecast on a road the rider is not on. The cone is the honest fallback.
+     */
+    const val ROUTE_DEVIATION_LIMIT_METRES = 500.0
+
+    /**
      * Build a forecast.
      *
      * @param nowEpochSeconds current time, used with the field's own timestamp to work
@@ -83,12 +93,15 @@ object RainForecaster {
      *        established. Null is handled by treating cells as stationary, which is
      *        wrong but not silently so: it makes the ETA conservative rather than
      *        confident, and the caller can lower the reported confidence.
+     * @param route the loaded route, if any. When the rider is on one it replaces the
+     *        uncertainty cone, because it answers exactly what the cone was guessing at.
      */
     fun forecast(
         rider: RiderState,
         field: RadarField,
         cellVelocity: CellMotionEstimator.CellVelocity?,
         nowEpochSeconds: Long,
+        route: RouteContext? = null,
     ): RainForecast {
         val frameAge = nowEpochSeconds - field.timeEpochSeconds
         if (frameAge < 0) {
@@ -113,10 +126,29 @@ object RainForecaster {
 
         val nearest = findNearest(rider, field, cellSpeed, cellBearing, frameAge, metresPerPixel)
 
-        val encounter = if (rider.canProject) {
-            findEncounter(rider, field, cellSpeed, cellBearing, frameAge)
-        } else {
-            null
+        // A route the rider is actually on answers the question the cone only guesses
+        // at, so it wins whenever it is available and credible.
+        val usableRoute = route
+            ?.takeIf { it.isUsable }
+            ?.takeIf {
+                it.deviationMetres(rider.longitude, rider.latitude) <= ROUTE_DEVIATION_LIMIT_METRES
+            }
+
+        // On a route, curvature stops being a reason to doubt: it stands in for "we
+        // cannot tell which way this rider will turn", and the route has just told us.
+        // A poor fix still counts, because that is doubt about where they are *now*,
+        // which no route can settle.
+        val pathConfidence =
+            if (usableRoute != null) onRouteConfidence(rider) else rider.confidence
+        val pathHorizon =
+            if (usableRoute != null) horizonFor(pathConfidence) else rider.horizonMinutes
+
+        val encounter = when {
+            !rider.canProject -> null
+            usableRoute != null -> findEncounterAlongRoute(
+                rider, usableRoute, field, cellSpeed, cellBearing, frameAge, pathHorizon,
+            )
+            else -> findEncounter(rider, field, cellSpeed, cellBearing, frameAge)
         }
 
         return RainForecast(
@@ -125,8 +157,8 @@ object RainForecaster {
             // An ageing frame caps how confident the answer may sound, however good the
             // rider's fix and however straight the road: by ten minutes the cells have
             // moved kilometres from where they were seen.
-            confidence = minOf(rider.confidence, confidenceCeilingFor(frameAge)),
-            horizonMinutes = rider.horizonMinutes,
+            confidence = minOf(pathConfidence, confidenceCeilingFor(frameAge)),
+            horizonMinutes = pathHorizon,
             frameAgeSeconds = frameAge,
             availability = RainForecast.Availability.OK,
         )
@@ -235,6 +267,127 @@ object RainForecaster {
             type = sample.type,
             possibleHail = sample.possibleHail,
         )
+    }
+
+    /**
+     * The same search, but along a known route instead of through a cone.
+     *
+     * No lateral sampling, because there is no lateral uncertainty left to sample: the
+     * rider's path is a line on the map, not a wedge of guesses. That makes the answer
+     * both cheaper — one lookup per step instead of nine — and sharper, since a cone wide
+     * enough to be honest about a free-riding rider will happily clip a shower the route
+     * passes half a kilometre clear of.
+     *
+     * The horizon is not shortened by path curvature here either. Curvature stands in for
+     * "we cannot tell where this rider will go"; a switchback descent that is *on the
+     * route* is perfectly predictable, and cutting the horizon to five minutes for it
+     * would throw away the certainty the route just supplied.
+     */
+    private fun findEncounterAlongRoute(
+        rider: RiderState,
+        route: RouteContext,
+        field: RadarField,
+        cellSpeed: Double,
+        cellBearing: Double?,
+        frameAgeSeconds: Long,
+        horizon: Double,
+    ): Encounter? {
+        val riderSpeed = rider.speedMetresPerSecond ?: return null
+        if (riderSpeed <= 0.0) return null
+        if (horizon <= 0.0) return null
+
+        val startIndex = route.nearestIndex(rider.longitude, rider.latitude)
+        val remaining = route.remainingMetres(startIndex)
+
+        var firstHitMinutes: Double? = null
+        var worstIntensity = DbzPalette.Intensity.NONE
+        var encounterType = DbzPalette.PrecipType.NONE
+        var hail = false
+        var lastWetMinutes = 0.0
+        var endedWhileStillWet = true
+
+        val limit = horizon + MAX_DURATION_MINUTES
+        var minutes = 0.0
+        while (minutes <= limit) {
+            if (firstHitMinutes == null && minutes > horizon) break
+
+            val alongMetres = riderSpeed * minutes * 60.0
+            // Past the finish there is no more route to forecast along. Stopping is the
+            // honest end of the answer rather than inventing a continuation.
+            if (alongMetres > remaining) break
+
+            val point = route.advance(startIndex, alongMetres)
+
+            val lookupPoint = if (cellBearing != null && cellSpeed > 0.0) {
+                val totalSeconds = frameAgeSeconds + minutes * 60.0
+                TileMath.destination(
+                    point.first, point.second,
+                    (cellBearing + 180.0) % 360.0,
+                    cellSpeed * totalSeconds,
+                )
+            } else {
+                point
+            }
+
+            when (field.observe(lookupPoint.first, lookupPoint.second)) {
+                RadarField.Observation.UNOBSERVED -> break
+                RadarField.Observation.WET -> {
+                    val sample = field.sampleAt(lookupPoint.first, lookupPoint.second)
+                    if (firstHitMinutes == null) firstHitMinutes = minutes
+                    lastWetMinutes = minutes
+                    if (sample.intensity.ordinal > worstIntensity.ordinal) {
+                        worstIntensity = sample.intensity
+                        encounterType = sample.type
+                    }
+                    if (sample.possibleHail) hail = true
+                }
+                RadarField.Observation.DRY -> {
+                    if (firstHitMinutes != null) {
+                        endedWhileStillWet = false
+                        break
+                    }
+                }
+            }
+
+            minutes += STEP_MINUTES
+        }
+
+        val eta = firstHitMinutes ?: return null
+
+        return Encounter(
+            etaMinutes = eta,
+            durationMinutes = if (endedWhileStillWet) null else (lastWetMinutes - eta + STEP_MINUTES),
+            intensity = worstIntensity,
+            type = encounterType,
+            possibleHail = hail,
+            // The route is the path. There is no spread of plausible alternatives for
+            // rain to partly cover, so a hit is a hit.
+            coneCoverage = 1.0,
+        )
+    }
+
+    /**
+     * Confidence in a forecast made along a known route.
+     *
+     * The same bands as [RiderState.confidence] minus the curvature terms. What is left
+     * is the fix: how well we know where the rider is standing right now, which a route
+     * says nothing about.
+     */
+    private fun onRouteConfidence(rider: RiderState): RiderState.Confidence {
+        if (!rider.canProject) return RiderState.Confidence.NONE
+        val accuracy = rider.accuracyMetres ?: return RiderState.Confidence.HIGH
+        return when {
+            accuracy > RiderState.POOR_FIX_METRES -> RiderState.Confidence.LOW
+            accuracy > RiderState.MEDIOCRE_FIX_METRES -> RiderState.Confidence.MEDIUM
+            else -> RiderState.Confidence.HIGH
+        }
+    }
+
+    /** How far ahead it is defensible to predict at a given confidence. */
+    private fun horizonFor(confidence: RiderState.Confidence): Double = when (confidence) {
+        RiderState.Confidence.NONE -> 0.0
+        RiderState.Confidence.LOW -> RiderState.MIN_HORIZON_MINUTES
+        else -> RiderState.MAX_HORIZON_MINUTES
     }
 
     /**
