@@ -8,25 +8,32 @@ the same shape as the ARSO Radar extension, just with more arithmetic on board.
 
 **Weather data by RainViewer** — <https://www.rainviewer.com/>
 Attribution is mandatory under RainViewer's free terms of use and must stay visible
-in the app. It is not decoration to drop when space is tight.
+in the app. It is not decoration to drop when space is tight. It lives on the about
+screen (`AboutActivity`), which exists chiefly to carry it — for a while the string sat
+in `strings.xml` referenced by nothing, the requirement documented and quietly unmet.
 
 ---
 
 ## Status
 
-Step 1 of 9 is done: radar plumbing and the maths underneath it.
-
 | # | Step | State |
 | --- | --- | --- |
 | 1 | Tile maths, dBZ decoding, RainViewer API model | **done** |
 | 2 | Rider speed and heading from the Karoo SDK | **done** |
-| 3 | Cell motion vector (own estimate; nowcast comparison pending) | **partly done** |
+| 3 | Cell motion vector (own estimate) | **done** |
 | 4 | Distance, ETA, uncertainty cone | **done** |
 | 5 | Hail threshold wired into the message | **done** |
 | 6 | Field rendering, sized from the real field dimensions | **done** |
 | 7 | `InRideAlert` triggers and hysteresis | **done** |
 | 8 | Evasion: four scenarios compared | **done** |
 | 9 | Pipeline, home advice, wet roads, post-ride summary | **done** |
+| 10 | Loaded routes: forecast along the polyline instead of a cone | **done** |
+| 11 | RainViewer nowcast as a second opinion (plan v4 §4) | **not started** |
+
+Step 11 is the one thing from the v2/v3/v4 plans that is not built. The plan asked for
+the app's own motion estimate and RainViewer's published nowcast to run side by side and
+be compared on real rides before choosing between them. Only the own estimate exists; the
+nowcast frames are modelled in `RainViewerApi` and never fetched.
 
 ---
 
@@ -116,10 +123,14 @@ whole class of noise, worst at low speed where GPS-derived speed is least reliab
 `UserProfile.weight` is documented as kilograms regardless of the rider's display
 preference, which strongly suggests raw data types carry SI and `preferredUnit` governs
 display only — so metres per second. But it is an inference, and if it is wrong every
-ETA is out by a factor of 3.6, which looks entirely plausible on screen.
-`SpeedSanity` therefore checks readings against what a bicycle can actually do and
-converts if a km/h stream shows up, after five consecutive implausible readings rather
-than one spike.
+ETA is out by a factor of 3.6, which looks entirely plausible on screen. Watch the
+"speed stream calibrated as …" log line on the first real ride.
+
+`SpeedSanity` is no longer part of that decision. It once tried to spot a km/h stream by
+magnitude and now only rejects readings no bicycle could produce in any unit, with the
+ceiling at 30 m/s. At the old 20 m/s any descent over 72 km/h was discarded, which turned
+speed to null, `canProject` to false and confidence to `NONE`: the app went blind on
+exactly the descents where a rider covers ground fastest.
 
 ### Fix accuracy comes from a second stream
 
@@ -218,6 +229,67 @@ The forecast is recomputed every thirty seconds, because the *rider* moves betwe
 and their ETA changes even when the weather does not — and recomputing is free once the
 field is decoded.
 
+**The frame index is refetched every cycle and never cached across one.** An early
+version kept it and cleared it only on the branch that had just fetched a new frame; the
+"nothing new published yet" branch returned before that line. From the second poll
+onwards the same index came back, its newest frame never changed, and the radar froze on
+whichever picture the ride happened to start with. Simulated over an hour: one frame
+downloaded, frame age climbing past sixty minutes — at which point the advection carries
+every lookup out of the window and the app reports a clear sky in the rain. It is a few
+kB of JSON. Refetching it is the cheap half of the method.
+
+**Ride lifecycle.** `reset()` runs on the transition into `RideState.Idle` — never on
+`Paused`. An automatic pause at a traffic light is a few seconds in the middle of a ride,
+and treating it as an ending would wipe the ride summary, forget where home is, and
+re-arm the "already raining when we started" suppression so the next warning is
+swallowed.
+
+### Unobserved is not dry
+
+The radar window is 60 km around the rider. Over the sixty-minute evasion horizon a rider
+covers 43 km and the backward advection displaces each lookup by tens more, so leaving
+that window is routine. Every simulator once read a position outside the mosaic as "not
+meaningful" — the same value a clear sky produces — and banked it as dry minutes.
+
+Measured, before the fix: with rain over *one hundred per cent* of the downloaded window
+and the rider near its western edge, the advice was `TurnBack`, credited with 48 dry
+minutes, none of which had been observed.
+
+`RadarField.observe` now returns `WET`, `DRY` or `UNOBSERVED`. Simulations stop at the
+edge of coverage, options are ranked over the span every candidate reached, and an option
+the radar cannot vouch for is never recommended. The distinction stops at the edge of the
+mosaic: inside it, scheme 0 encodes "no rain" and "no coverage" identically as
+transparent, so `DRY` there is the honest limit of what the source supports.
+
+### Availability is carried, not inferred
+
+`RainForecast.availability` is `OK`, `NO_RADAR` or `STALE`, and the message routes on it.
+Inferring it instead — no encounter, no nearest cell, no confidence must mean "we cannot
+see" — was wrong in both directions. A rider standing still under a genuinely clear sky
+matches that shape exactly and was told "No radar data"; a rider with a good fix and an
+empty field does not match it and was told "Clear" on the strength of nothing.
+
+Confidence describes the **rider** — heading, fix accuracy, how twisty the road has been.
+It never described how much of the field was observed, which is why it could not have
+carried this and why a test that claimed it did was wrong.
+
+Frames older than `MAX_USABLE_FRAME_AGE_SECONDS` (20 minutes) stop producing a forecast
+and report their age instead. Past ten minutes the answer is no longer allowed to sound
+certain, however good the fix. That constant had been declared, documented and referenced
+nowhere.
+
+### A loaded route replaces the cone
+
+The cone models "we do not know which way this rider will turn". `OnNavigationState`
+answers that to the metre, so when a route is loaded the forecast walks the polyline
+instead: one lookup per step rather than nine, no lateral spread, and no shortening of
+the horizon for curvature — a switchback that is *on the route* is perfectly predictable.
+A poor fix still limits things, because that is doubt about where the rider is now, which
+no route can settle. Stray more than 500 m from it and the cone comes back.
+
+`reversed` matters: a route ridden backwards ends where the polyline starts, and taking
+the wrong end would aim every home-advice answer at the far side of the ride.
+
 `RadarRepository` is the only part of RainCall that touches the network or Android
 graphics. Two things there are easy to get wrong: tiles are decoded as `ARGB_8888`
 because a 565 config would quantise the grey channel and destroy the linear dBZ encoding,
@@ -239,6 +311,12 @@ true. Not for deciding anything mid-ride; its value is over time, because a ride
 see the forecast was right the last five times will believe the sixth. The accuracy
 figure is reported plainly including when it is poor — a tool that only reports its
 successes is not worth believing about anything.
+
+It is shown on the about screen, saved there when the ride ends. For a while it was
+computed every thirty seconds of every ride and shown nowhere at all: `rideSummary()` had
+no callers, and neither did `recordPrediction`, so the accuracy figure was permanently
+null. Predictions are now recorded when a warning is issued and settled when their moment
+arrives, de-duplicated so one shower is scored once rather than sixty times.
 
 **Stopped mode** needed no special code in the end. Standing still there is no heading to
 project along, so the forecaster already declines to project and the message degrades to

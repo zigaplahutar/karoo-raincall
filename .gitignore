@@ -1,0 +1,15 @@
+# Build output
+build/
+.gradle/
+*.apk
+*.aab
+
+# Local machine configuration. Contains the absolute path to the Android SDK, which is
+# specific to whoever built it — and is the file an absent-minded `git add -A` is most
+# likely to leak.
+local.properties
+
+# IDE
+.idea/
+*.iml
+.DS_Store
