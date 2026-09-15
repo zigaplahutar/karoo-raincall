@@ -2,10 +2,10 @@
   "label": "RainCall",
   "packageName": "si.plahutar.raincall",
   "latestApkUrl": "https://github.com/zigaplahutar/karoo-raincall/releases/latest/download/raincall.apk",
-  "latestVersion": "0.1.0",
-  "latestVersionCode": 1,
+  "latestVersion": "0.1.1",
+  "latestVersionCode": 2,
   "developer": "Žiga Plahutar",
   "description": "Text-based rain warnings for the Hammerhead Karoo 3: when rain may reach you, how hard it may be, and which way to go to avoid it.",
-  "releaseNotes": "Initial RainCall release with radar-based rain forecasting, route-aware guidance, rain avoidance advice and ride alerts.",
+  "releaseNotes": "Fix the data field's oversized text, and route radar requests through Karoo's own network bridge so the forecast keeps working over Bluetooth when there is no WiFi.",
   "tags": ["weather"]
 }

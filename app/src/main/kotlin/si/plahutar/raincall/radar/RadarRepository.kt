@@ -4,12 +4,11 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.util.Log
+import io.hammerhead.karooext.KarooSystemService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import java.io.IOException
-import java.net.HttpURLConnection
-import java.net.URL
 
 /**
  * Where decoded radar frames come from.
@@ -39,12 +38,19 @@ interface RadarSource {
  * Everything downstream works on a decoded grid, which is what lets the maths be tested
  * without a device.
  *
+ * Every request goes through [KarooSystemService]'s own HTTP bridge ([httpGet]) rather
+ * than a direct connection. Karoo has no cellular modem, so on a ride with no WiFi that
+ * bridge — relayed over Bluetooth to the Companion app on the rider's phone — is the
+ * only way to reach the network at all, and it already prefers WiFi when the device has
+ * it, so there is no separate direct-connection path to maintain.
+ *
  * The frames are cached by their observation time. RainViewer publishes a new frame
  * every ten minutes and asks clients to cache rather than poll hard, and the motion
  * estimator needs the *previous* frame anyway — refetching it every cycle would triple
  * the traffic for no new information.
  */
 class RadarRepository(
+    private val karooSystem: KarooSystemService,
     private val zoom: Int = RainViewerApi.ANALYSIS_ZOOM,
     private val tileSize: Int = RainViewerApi.TILE_SIZE,
     /** How far around the rider to fetch. */
@@ -53,8 +59,6 @@ class RadarRepository(
 
     companion object {
         private const val TAG = "RadarRepository"
-        private const val CONNECT_TIMEOUT_MS = 15_000
-        private const val READ_TIMEOUT_MS = 20_000
 
         /** Frames kept in memory. Two is the minimum the motion estimator needs. */
         private const val CACHE_SIZE = 3
@@ -118,7 +122,7 @@ class RadarRepository(
         return field
     }
 
-    private fun decodeFrame(
+    private suspend fun decodeFrame(
         index: RainViewerApi.Index,
         frame: RainViewerApi.Frame,
         range: TileMath.TileRange,
@@ -216,46 +220,19 @@ class RadarRepository(
         return DbzPalette.looksLikeLinearScheme(sample)
     }
 
-    private fun downloadBitmap(url: String): Bitmap {
-        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-            connectTimeout = CONNECT_TIMEOUT_MS
-            readTimeout = READ_TIMEOUT_MS
-            requestMethod = "GET"
+    private suspend fun downloadBitmap(url: String): Bitmap {
+        val bytes = karooSystem.httpGet(url)
+        val options = BitmapFactory.Options().apply {
+            // ARGB_8888 so the exact byte values survive. A 565 config would quantise
+            // the grey channel and destroy the linear dBZ encoding.
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+            inScaled = false
         }
-        try {
-            if (connection.responseCode !in 200..299) {
-                throw IOException("HTTP ${connection.responseCode} for $url")
-            }
-            val options = BitmapFactory.Options().apply {
-                // ARGB_8888 so the exact byte values survive. A 565 config would quantise
-                // the grey channel and destroy the linear dBZ encoding.
-                inPreferredConfig = Bitmap.Config.ARGB_8888
-                inScaled = false
-            }
-            return connection.inputStream.use { stream ->
-                BitmapFactory.decodeStream(stream, null, options)
-                    ?: throw IOException("undecodable tile at $url")
-            }
-        } finally {
-            connection.disconnect()
-        }
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+            ?: throw IOException("undecodable tile at $url")
     }
 
-    private fun get(url: String): String {
-        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-            connectTimeout = CONNECT_TIMEOUT_MS
-            readTimeout = READ_TIMEOUT_MS
-            requestMethod = "GET"
-        }
-        try {
-            if (connection.responseCode !in 200..299) {
-                throw IOException("HTTP ${connection.responseCode} for $url")
-            }
-            return connection.inputStream.bufferedReader().use { it.readText() }
-        } finally {
-            connection.disconnect()
-        }
-    }
+    private suspend fun get(url: String): String = karooSystem.httpGet(url).decodeToString()
 
     /**
      * Drop cached frames and any decoding decisions. Called when a ride ends.

@@ -30,6 +30,16 @@ fun RainCallField(
     layout: TextFitter.Layout,
     severity: Severity,
     alignment: ViewConfig.Alignment,
+    /**
+     * [TextFitter.Layout.textSizePx] converted to sp.
+     *
+     * The fitter measures against real device pixels (matching `ViewConfig.viewSize`,
+     * which Karoo also reports in pixels), but Compose text is always sized in sp and
+     * silently re-multiplies by the display's scaled density when it renders. Passing
+     * the raw pixel value straight into `.sp` would apply that density scaling twice,
+     * inflating the text and overflowing the field it was just fitted to.
+     */
+    textSizeSp: Float,
 ) {
     val textAlign = when (alignment) {
         ViewConfig.Alignment.LEFT -> TextAlign.Start
@@ -51,8 +61,8 @@ fun RainCallField(
                 text = line,
                 style = TextStyle(
                     // The fitter already decided this size against the measured field
-                    // width, so nothing here needs to guess or scale further.
-                    fontSize = layout.textSizePx.sp,
+                    // width; textSizeSp only converts its unit, it does not rescale it.
+                    fontSize = textSizeSp.sp,
                     // Only the headline is bold. Bolding everything would remove the
                     // distinction rather than emphasise it.
                     fontWeight = if (index == 0) FontWeight.Bold else FontWeight.Normal,

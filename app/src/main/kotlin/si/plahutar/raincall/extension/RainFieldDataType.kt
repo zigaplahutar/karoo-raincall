@@ -54,11 +54,12 @@ class RainFieldDataType(
 
         val job = scope.launch {
             messages.collect { message ->
+                val scaledDensity = context.resources.displayMetrics.scaledDensity
                 val layout = fitter.fit(
                     message = message,
                     widthPx = config.viewSize.first,
                     heightPx = config.viewSize.second,
-                    baseTextSizePx = config.textSize * context.resources.displayMetrics.scaledDensity,
+                    baseTextSizePx = config.textSize * scaledDensity,
                 )
 
                 val result = glance.compose(context, DpSize.Unspecified) {
@@ -66,6 +67,11 @@ class RainFieldDataType(
                         layout = layout,
                         severity = message.severity,
                         alignment = config.alignment,
+                        // Undo the sp-to-px conversion above: Compose's `.sp` applies
+                        // scaledDensity again on render, so the value handed to it must
+                        // be back in sp or the on-screen text ends up scaledDensity
+                        // times too big.
+                        textSizeSp = layout.textSizePx / scaledDensity,
                     )
                 }
                 emitter.updateView(result.remoteViews)

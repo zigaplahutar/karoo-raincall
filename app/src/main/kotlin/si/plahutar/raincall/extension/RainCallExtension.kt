@@ -58,7 +58,7 @@ class RainCallExtension : KarooExtension(EXTENSION_ID, VERSION) {
         val riderStates = RiderStateProvider(karooSystem)
 
         pipeline = ForecastPipeline(
-            repository = RadarRepository(),
+            repository = RadarRepository(karooSystem),
             riderStates = riderStates.state,
             routes = riderStates.route,
             units = { units.value },
